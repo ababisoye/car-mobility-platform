@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import importlib.util
 import json
 import os
@@ -21,6 +23,15 @@ class FakeTable:
             return {}
         return {"Item": {key: item[key] for key in ("booking_id", "status", "created_at")}}
 
+    def scan(self, **kwargs):
+        return {"Items": list(self.items.values())}
+
+    def update_item(self, Key, ExpressionAttributeValues, **kwargs):
+        item = self.items[Key["booking_id"]]
+        item["status"] = ExpressionAttributeValues[":status"]
+        item["updated_at"] = ExpressionAttributeValues[":updated"]
+        return {"Attributes": item}
+
 
 FAKE_TABLE = FakeTable()
 fake_boto3 = types.SimpleNamespace(
@@ -30,6 +41,11 @@ sys.modules["boto3"] = fake_boto3
 os.environ["BOOKINGS_TABLE"] = "test-bookings"
 os.environ["BOOKING_TTL_DAYS"] = "30"
 os.environ["ALLOWED_ORIGIN"] = "*"
+test_salt = b"unit-test-salt"
+test_digest = hashlib.pbkdf2_hmac("sha256", b"test-admin-password", test_salt, 10_000)
+os.environ["ADMIN_PASSWORD_HASH"] = (
+    f"10000:{base64.b64encode(test_salt).decode()}:{base64.b64encode(test_digest).decode()}"
+)
 
 handler_path = (
     Path(__file__).parents[1]
@@ -44,11 +60,12 @@ handler = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(handler)
 
 
-def event(method, path, body=None):
+def event(method, path, body=None, headers=None):
     return {
         "requestContext": {"http": {"method": method}},
         "rawPath": path,
         "body": json.dumps(body) if body is not None else None,
+        "headers": headers or {},
     }
 
 
@@ -92,7 +109,42 @@ class DemoHandlerTests(unittest.TestCase):
         result = handler.lambda_handler(event("POST", "/bookings", request), None)
         self.assertEqual(result["statusCode"], 400)
 
+    def test_admin_dashboard_requires_password(self):
+        page = handler.lambda_handler(event("GET", "/admin"), None)
+        denied = handler.lambda_handler(event("GET", "/admin/bookings"), None)
+        self.assertEqual(page["statusCode"], 200)
+        self.assertIn("Operations Dashboard", page["body"])
+        self.assertEqual(denied["statusCode"], 401)
+
+    def test_admin_can_list_and_update_booking(self):
+        headers = {"x-admin-password": "test-admin-password"}
+        created = handler.lambda_handler(
+            event(
+                "POST",
+                "/bookings",
+                {
+                    "name": "Operations Test",
+                    "phone": "+2348000000001",
+                    "hub": "Abuja",
+                    "trip_type": "Local",
+                    "pickup": "Wuse",
+                    "destination": "Maitama",
+                    "pickup_at": "2026-09-12T10:00",
+                },
+            ),
+            None,
+        )
+        booking_id = json.loads(created["body"])["booking_id"]
+        listed = handler.lambda_handler(event("GET", "/admin/bookings", headers=headers), None)
+        self.assertEqual(listed["statusCode"], 200)
+        self.assertTrue(json.loads(listed["body"])["bookings"])
+        updated = handler.lambda_handler(
+            event("PATCH", f"/admin/bookings/{booking_id}", {"status": "REVIEWING"}, headers),
+            None,
+        )
+        self.assertEqual(updated["statusCode"], 200)
+        self.assertEqual(json.loads(updated["body"])["status"], "REVIEWING")
+
 
 if __name__ == "__main__":
     unittest.main()
-

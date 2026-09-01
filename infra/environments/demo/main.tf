@@ -53,7 +53,9 @@ resource "aws_iam_role_policy" "lambda" {
         Effect = "Allow"
         Action = [
           "dynamodb:GetItem",
-          "dynamodb:PutItem"
+          "dynamodb:PutItem",
+          "dynamodb:Scan",
+          "dynamodb:UpdateItem"
         ]
         Resource = aws_dynamodb_table.bookings.arn
       },
@@ -92,9 +94,10 @@ resource "aws_lambda_function" "application" {
 
   environment {
     variables = {
-      BOOKINGS_TABLE   = aws_dynamodb_table.bookings.name
-      ALLOWED_ORIGIN   = var.allowed_origin
-      BOOKING_TTL_DAYS = "30"
+      BOOKINGS_TABLE      = aws_dynamodb_table.bookings.name
+      ALLOWED_ORIGIN      = var.allowed_origin
+      BOOKING_TTL_DAYS    = "30"
+      ADMIN_PASSWORD_HASH = var.admin_password_hash
     }
   }
 
@@ -107,8 +110,8 @@ resource "aws_lambda_function_url" "application" {
 
   cors {
     allow_credentials = false
-    allow_headers     = ["content-type"]
-    allow_methods     = ["GET", "POST"]
+    allow_headers     = ["content-type", "x-admin-password"]
+    allow_methods     = ["GET", "POST", "PATCH"]
     allow_origins     = [var.allowed_origin]
     expose_headers    = ["content-type"]
     max_age           = 300

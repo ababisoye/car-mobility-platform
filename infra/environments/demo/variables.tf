@@ -30,3 +30,13 @@ variable "allowed_origin" {
   default     = "*"
 }
 
+variable "admin_password_hash" {
+  description = "PBKDF2 password hash for the demo operations dashboard. Generate it with scripts/generate-admin-password-hash.py."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = can(regex("^[0-9]+:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$", var.admin_password_hash))
+    error_message = "admin_password_hash must use the iterations:salt:digest format produced by the helper script."
+  }
+}

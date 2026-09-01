@@ -12,6 +12,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Reduced the public request path to Lambda Function URL and DynamoDB
 - Implemented infrastructure as code for demo, non-production and production stages
 - Added booking validation, short-lived demo records and security headers
+- Added a password-protected operations view for booking review and status updates
 - Automated Python tests plus Terraform formatting and validation in CI
 - Documented a production growth path without forcing production cost on the MVP
 
@@ -33,6 +34,8 @@ The zero-funding path deliberately omits API Gateway, a load balancer, NAT Gatew
 
 ![Mobile-friendly chauffeur booking form](docs/booking-demo.png)
 
+![Password-protected operations dashboard](docs/operations-dashboard.png)
+
 Run the interface locally without AWS credentials:
 
 ```powershell
@@ -40,6 +43,8 @@ python scripts/preview-demo.py
 ```
 
 Then open `http://127.0.0.1:8080`. Local preview bookings are held in memory and disappear when the process stops.
+
+The local operations dashboard is at `http://127.0.0.1:8080/admin`; its preview-only password is printed by the script.
 
 ## Zero-funding mode
 
@@ -97,6 +102,7 @@ infra/
     nonprod/              Reduced-cost integration/staging foundation
     production/           Production safety defaults
 scripts/
+  generate-admin-password-hash.py  Create the demo dashboard credential hash
   preview-demo.py         Local preview with in-memory booking storage
   terraform-check.ps1     Local formatting and validation helper
 ```
@@ -142,6 +148,7 @@ Copy the example variables and replace the placeholders:
 
 ```powershell
 Copy-Item infra/environments/demo/terraform.tfvars.example infra/environments/demo/terraform.tfvars
+python scripts/generate-admin-password-hash.py
 ./scripts/build-demo-package.ps1
 Set-Location infra/environments/demo
 terraform init
@@ -154,6 +161,10 @@ Review the plan carefully. It should contain no VPC, NAT Gateway, load balancer,
 terraform apply demo.tfplan
 terraform output -raw demo_url
 ```
+
+Paste the generated hash into `admin_password_hash` in the ignored `terraform.tfvars` file. The plaintext password is never written by the helper. After deployment, append `/admin` to the demo URL to open the operations dashboard.
+
+The dashboard authentication is deliberately small and cost-free: HTTPS carries the password and Lambda verifies it against a salted PBKDF2 hash. For production, replace this mechanism with Cognito or another managed identity provider, MFA, role-based access and an audit trail.
 
 Destroy the demo when it is no longer needed:
 
