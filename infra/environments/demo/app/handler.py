@@ -4,6 +4,7 @@ import hmac
 import html
 import json
 import os
+import secrets
 import time
 import uuid
 from contextvars import ContextVar
@@ -78,6 +79,18 @@ def clean(value, maximum):
     return str(value or "").strip()[:maximum]
 
 
+def booking_access_token(event):
+    headers = {str(key).lower(): value for key, value in (event.get("headers") or {}).items()}
+    return clean(headers.get("x-booking-token"), 200)
+
+
+def booking_access_allowed(event, booking):
+    supplied = booking_access_token(event)
+    expected = booking.get("customer_token_hash", "") if booking else ""
+    actual = hashlib.sha256(supplied.encode("utf-8")).hexdigest() if supplied else ""
+    return bool(supplied and expected and hmac.compare_digest(actual, expected))
+
+
 def queue_notification(booking_id, event_type, message, audience="CUSTOMER"):
     now = int(time.time())
     item = {
@@ -130,26 +143,28 @@ def create_booking(event):
 
     now = int(time.time())
     booking_id = str(uuid.uuid4())
+    access_token = secrets.token_urlsafe(32)
     item = {
         "schema_version": SCHEMA_VERSION,
         "booking_id": booking_id,
         "status": "REQUESTED",
         "created_at": now,
         "expires_at": now + TTL_DAYS * 86400,
+        "customer_token_hash": hashlib.sha256(access_token.encode("utf-8")).hexdigest(),
         **booking,
     }
     TABLE.put_item(Item=item, ConditionExpression="attribute_not_exists(booking_id)")
     queue_notification(booking_id, "BOOKING_REQUESTED", "Your booking request was received and is awaiting review.")
     log_event("booking_created", booking_id=booking_id, hub=booking["hub"], trip_type=booking["trip_type"])
-    return response(201, {"booking_id": booking_id, "status": "REQUESTED", "message": "Your demo request has been recorded."})
+    return response(201, {"booking_id": booking_id, "access_token": access_token, "status": "REQUESTED", "message": "Your demo request has been recorded. Save the access token; it is shown only once."})
 
 
-def booking_status(booking_id):
-    result = TABLE.get_item(Key={"booking_id": booking_id}, ProjectionExpression="booking_id, #s, created_at", ExpressionAttributeNames={"#s": "status"})
+def booking_status(event, booking_id):
+    result = TABLE.get_item(Key={"booking_id": booking_id})
     item = result.get("Item")
-    if not item:
+    if not booking_access_allowed(event, item):
         return response(404, {"error": "Booking request not found."})
-    return response(200, item)
+    return response(200, {key: item[key] for key in ("booking_id", "status", "created_at")})
 
 
 def admin_password(event):
@@ -207,7 +222,8 @@ def list_bookings(event):
     if denied:
         return denied
     result = TABLE.scan(Limit=50)
-    items = sorted(result.get("Items", []), key=lambda item: item.get("created_at", 0), reverse=True)
+    items = [{key: value for key, value in item.items() if key != "customer_token_hash"} for item in result.get("Items", [])]
+    items.sort(key=lambda item: item.get("created_at", 0), reverse=True)
     return response(200, {"bookings": items, "count": len(items), "limited": "Last 50 scanned records"})
 
 
@@ -416,7 +432,10 @@ def manage_quotes(event, booking_id):
     return response(201, quote)
 
 
-def latest_quote(booking_id):
+def latest_quote(event, booking_id):
+    booking = TABLE.get_item(Key={"booking_id": booking_id}).get("Item")
+    if not booking_access_allowed(event, booking):
+        return response(404, {"error": "Booking request not found."})
     quotes = booking_quotes(booking_id)
     if not quotes:
         return response(404, {"error": "No quote has been issued for this booking."})
@@ -463,7 +482,10 @@ def manage_payments(event, booking_id):
     return response(201, item)
 
 
-def latest_payment(booking_id):
+def latest_payment(event, booking_id):
+    booking = TABLE.get_item(Key={"booking_id": booking_id}).get("Item")
+    if not booking_access_allowed(event, booking):
+        return response(404, {"error": "Booking request not found."})
     payments = booking_payments(booking_id)
     if not payments:
         return response(404, {"error": "No payment request exists for this booking."})
@@ -571,7 +593,7 @@ def page():
 <div class="full"><label for="notes">Notes</label><textarea id="notes" name="notes" maxlength="500"></textarea></div>
 <div class="full"><button id="submit" type="submit">Request a quote</button></div></div></form><div id="result" class="result" role="status"></div>
 <p class="fine">Requests are automatically deleted after 30 days. Do not submit identity documents, payment details or sensitive personal information.</p></main>
-<script>const f=document.querySelector('#booking'),b=document.querySelector('#submit'),r=document.querySelector('#result');f.addEventListener('submit',async e=>{e.preventDefault();b.disabled=true;r.style.display='block';r.textContent='Submitting…';const data=Object.fromEntries(new FormData(f));try{const x=await fetch('/bookings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)}),j=await x.json();if(!x.ok)throw Error(j.error||'Request failed');r.innerHTML='<strong>Request recorded.</strong><br>Reference: '+j.booking_id;f.reset()}catch(err){r.textContent=err.message}finally{b.disabled=false}});</script></body></html>"""
+<script>const f=document.querySelector('#booking'),b=document.querySelector('#submit'),r=document.querySelector('#result');f.addEventListener('submit',async e=>{e.preventDefault();b.disabled=true;r.style.display='block';r.textContent='Submitting…';const data=Object.fromEntries(new FormData(f));try{const x=await fetch('/bookings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)}),j=await x.json();if(!x.ok)throw Error(j.error||'Request failed');r.textContent='Request recorded.\\nReference: '+j.booking_id+'\\nAccess token (save now): '+j.access_token;f.reset()}catch(err){r.textContent=err.message}finally{b.disabled=false}});</script></body></html>"""
 
 
 def admin_page():
@@ -643,10 +665,10 @@ def route_request(event):
         return payment_webhook(event)
     if method == "GET" and path.startswith("/bookings/"):
         if path.endswith("/quote"):
-            return latest_quote(html.escape(path.split("/")[-2]))
+            return latest_quote(event, html.escape(path.split("/")[-2]))
         if path.endswith("/payment"):
-            return latest_payment(html.escape(path.split("/")[-2]))
-        return booking_status(html.escape(path.rsplit("/", 1)[-1]))
+            return latest_payment(event, html.escape(path.split("/")[-2]))
+        return booking_status(event, html.escape(path.rsplit("/", 1)[-1]))
     return response(404, {"error": "Not found."})
 
 

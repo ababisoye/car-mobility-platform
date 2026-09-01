@@ -220,7 +220,7 @@ resource "aws_lambda_function_url" "application" {
 
   cors {
     allow_credentials = false
-    allow_headers     = ["content-type", "x-admin-password", "x-staff-password"]
+    allow_headers     = ["content-type", "x-admin-password", "x-booking-token", "x-staff-password"]
     allow_methods     = ["GET", "POST", "PATCH"]
     allow_origins     = [var.allowed_origin]
     expose_headers    = ["content-type", "x-request-id"]

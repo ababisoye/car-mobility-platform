@@ -23,6 +23,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Emits privacy-conscious JSON logs with request correlation, latency and Lambda release metadata
 - Versions every DynamoDB record and provides an account-guarded, dry-run-first migration workflow
 - Separates administrator and operator permissions with matching server-side and dashboard controls
+- Protects customer booking, quote and payment lookups with one-time access tokens stored only as hashes
 - Automated Python tests plus Terraform formatting and validation in CI
 - Documented a production growth path without forcing production cost on the MVP
 
@@ -129,6 +130,7 @@ docs/
   observability-runbook.md Structured-log queries and incident response
   data-migrations.md      DynamoDB compatibility, verification and rollback rules
   access-control.md       Demo role matrix and managed-identity boundary
+  customer-access.md      Hashed booking-token handling and customer API rules
 scripts/
   generate-admin-password-hash.py  Create the demo dashboard credential hash
   preview-demo.py         Local preview with in-memory booking storage
@@ -199,7 +201,9 @@ The dashboard authentication is deliberately small and cost-free: HTTPS carries 
 
 Notification events are stored but not sent in zero-funding mode. A later provider adapter can deliver them by email, SMS or WhatsApp without coupling booking logic to one vendor.
 
-Payment requests are also provider-neutral. Admins create one from the latest quote at `POST /admin/bookings/{booking_id}/payments`; customers can check `GET /bookings/{booking_id}/payment`; and a future provider posts signed status events to `POST /webhooks/payments`. Webhook event IDs are retained for 30 days so retries do not apply the same event twice.
+Payment requests are also provider-neutral. Admins create one from the latest quote at `POST /admin/bookings/{booking_id}/payments`; customers can check `GET /bookings/{booking_id}/payment` using the one-time token returned with their booking; and a future provider posts signed status events to `POST /webhooks/payments`. Webhook event IDs are retained for 30 days so retries do not apply the same event twice.
+
+Customer status, quote and payment endpoints require `x-booking-token`. Only a SHA-256 hash is stored, invalid credentials receive the same response as unknown bookings, and staff APIs never return the hash. See [customer booking access](docs/customer-access.md).
 
 Destroy the demo when it is no longer needed:
 

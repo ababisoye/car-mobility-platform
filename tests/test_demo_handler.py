@@ -141,6 +141,7 @@ class DemoHandlerTests(unittest.TestCase):
         result = handler.lambda_handler(event("GET", "/"), None)
         self.assertEqual(result["statusCode"], 200)
         self.assertIn("Request a quote", result["body"])
+        self.assertIn(r"Request recorded.\nReference", result["body"])
 
     def test_requests_have_structured_safe_correlation_logs(self):
         request = event("POST", "/bookings", {"name": "Do Not Log This Name", "phone": "+2348111111111", "hub": "Lagos", "trip_type": "Local", "pickup": "Ikoyi", "destination": "Airport", "pickup_at": "2027-05-01T09:00", "end_at": "2027-05-01T12:00"})
@@ -149,6 +150,7 @@ class DemoHandlerTests(unittest.TestCase):
         handler.log_event = self.real_log_event
         with redirect_stdout(captured):
             result = handler.lambda_handler(request, None)
+        issued_token = json.loads(result["body"])["access_token"]
         records = [json.loads(line) for line in captured.getvalue().splitlines()]
         self.assertEqual(result["headers"]["x-request-id"], "request-test-123")
         self.assertEqual(records[0]["event"], "request_started")
@@ -157,6 +159,7 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertTrue(all(record["actor_role"] == "PUBLIC" for record in records))
         self.assertNotIn("Do Not Log This Name", captured.getvalue())
         self.assertNotIn("+2348111111111", captured.getvalue())
+        self.assertNotIn(issued_token, captured.getvalue())
 
     def test_health_reports_release_version(self):
         result = handler.lambda_handler(event("GET", "/health"), None)
@@ -180,12 +183,19 @@ class DemoHandlerTests(unittest.TestCase):
         }
         created = handler.lambda_handler(event("POST", "/bookings", request), None)
         self.assertEqual(created["statusCode"], 201)
-        booking_id = json.loads(created["body"])["booking_id"]
+        created_body = json.loads(created["body"])
+        booking_id = created_body["booking_id"]
+        access = {"x-booking-token": created_body["access_token"]}
         self.assertEqual(FAKE_TABLES["test-bookings"].items[booking_id]["schema_version"], 1)
 
-        status = handler.lambda_handler(event("GET", f"/bookings/{booking_id}"), None)
+        status = handler.lambda_handler(event("GET", f"/bookings/{booking_id}", headers=access), None)
         self.assertEqual(status["statusCode"], 200)
         self.assertEqual(json.loads(status["body"])["status"], "REQUESTED")
+        self.assertEqual(handler.lambda_handler(event("GET", f"/bookings/{booking_id}"), None)["statusCode"], 404)
+        self.assertEqual(handler.lambda_handler(event("GET", f"/bookings/{booking_id}", headers={"x-booking-token": "wrong"}), None)["statusCode"], 404)
+        admin_list = handler.lambda_handler(event("GET", "/admin/bookings", headers={"x-admin-password": "test-admin-password"}), None)
+        listed_booking = next(item for item in json.loads(admin_list["body"])["bookings"] if item["booking_id"] == booking_id)
+        self.assertNotIn("customer_token_hash", listed_booking)
 
     def test_invalid_hub_is_rejected(self):
         request = {
@@ -329,11 +339,13 @@ class DemoHandlerTests(unittest.TestCase):
             event("POST", "/bookings", {"name": "Quote Test", "phone": "+2348000000004", "hub": "Lagos", "trip_type": "Interstate", "pickup": "Ikoyi", "destination": "Abeokuta", "pickup_at": "2027-01-10T09:00", "end_at": "2027-01-10T18:00"}),
             None,
         )
-        booking_id = json.loads(booking["body"])["booking_id"]
+        booking_body = json.loads(booking["body"])
+        booking_id = booking_body["booking_id"]
+        customer_headers = {"x-booking-token": booking_body["access_token"]}
         first = handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/quotes", {"amount_ngn": 250000, "valid_until": "2027-01-05T18:00", "notes": "Initial estimate"}, headers), None)
         second = handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/quotes", {"amount_ngn": 275000, "valid_until": "2027-01-06T18:00", "notes": "Includes interstate tolls"}, headers), None)
         history = handler.lambda_handler(event("GET", f"/admin/bookings/{booking_id}/quotes", headers=headers), None)
-        latest = handler.lambda_handler(event("GET", f"/bookings/{booking_id}/quote"), None)
+        latest = handler.lambda_handler(event("GET", f"/bookings/{booking_id}/quote", headers=customer_headers), None)
         self.assertEqual(first["statusCode"], 201)
         self.assertEqual(json.loads(second["body"])["version"], 2)
         self.assertEqual(json.loads(history["body"])["count"], 2)
@@ -345,7 +357,9 @@ class DemoHandlerTests(unittest.TestCase):
             event("POST", "/bookings", {"name": "Payment Test", "phone": "+2348000000006", "hub": "Abuja", "trip_type": "Local", "pickup": "Maitama", "destination": "Airport", "pickup_at": "2027-03-01T09:00", "end_at": "2027-03-01T12:00"}),
             None,
         )
-        booking_id = json.loads(booking["body"])["booking_id"]
+        booking_body = json.loads(booking["body"])
+        booking_id = booking_body["booking_id"]
+        customer_headers = {"x-booking-token": booking_body["access_token"]}
         handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/quotes", {"amount_ngn": 180000, "valid_until": "2027-02-25T18:00"}, headers), None)
         created = handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/payments", {}, headers), None)
         self.assertEqual(created["statusCode"], 201)
@@ -355,8 +369,8 @@ class DemoHandlerTests(unittest.TestCase):
         webhook["headers"] = {"x-webhook-signature": hmac.new(os.environ["PAYMENT_WEBHOOK_SECRET"].encode(), webhook["body"].encode(), hashlib.sha256).hexdigest()}
         first = handler.lambda_handler(webhook, None)
         duplicate = handler.lambda_handler(webhook, None)
-        public_status = handler.lambda_handler(event("GET", f"/bookings/{booking_id}/payment"), None)
-        booking_status = handler.lambda_handler(event("GET", f"/bookings/{booking_id}"), None)
+        public_status = handler.lambda_handler(event("GET", f"/bookings/{booking_id}/payment", headers=customer_headers), None)
+        booking_status = handler.lambda_handler(event("GET", f"/bookings/{booking_id}", headers=customer_headers), None)
         notifications = handler.lambda_handler(event("GET", "/admin/notifications", headers=headers), None)
         payment_confirmations = [item for item in json.loads(notifications["body"])["notifications"] if item.get("booking_id") == booking_id and item.get("event_type") == "PAYMENT_CONFIRMED"]
         self.assertEqual(first["statusCode"], 200)
