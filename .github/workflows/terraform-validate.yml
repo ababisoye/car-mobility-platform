@@ -8,7 +8,7 @@ on:
       - "tests/**"
       - "docs/**"
       - "README.md"
-      - ".github/workflows/terraform-validate.yml"
+      - ".github/workflows/**"
   push:
     branches: [main]
     paths:
@@ -17,7 +17,7 @@ on:
       - "tests/**"
       - "docs/**"
       - "README.md"
-      - ".github/workflows/terraform-validate.yml"
+      - ".github/workflows/**"
 
 permissions:
   contents: read
@@ -26,8 +26,8 @@ jobs:
   format:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - name: Test zero-funding Lambda
@@ -48,8 +48,9 @@ jobs:
           - infra/environments/demo
           - infra/environments/nonprod
           - infra/environments/production
+          - infra/github-release-role
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: hashicorp/setup-terraform@v4
         with:
           terraform_version: 1.15.9

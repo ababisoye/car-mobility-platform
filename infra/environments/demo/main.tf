@@ -196,10 +196,25 @@ resource "aws_lambda_function" "application" {
   }
 
   depends_on = [aws_cloudwatch_log_group.application]
+
+  publish = true
+}
+
+resource "aws_lambda_alias" "live" {
+  name             = "live"
+  description      = "Stable release pointer used for controlled deployment and rollback."
+  function_name    = aws_lambda_function.application.function_name
+  function_version = aws_lambda_function.application.version
+
+  lifecycle {
+    # The release workflow owns promotion after Terraform creates the initial alias.
+    ignore_changes = [function_version]
+  }
 }
 
 resource "aws_lambda_function_url" "application" {
   function_name      = aws_lambda_function.application.function_name
+  qualifier          = aws_lambda_alias.live.name
   authorization_type = "NONE"
 
   cors {
@@ -216,6 +231,7 @@ resource "aws_lambda_permission" "public_url" {
   statement_id           = "AllowPublicFunctionUrl"
   action                 = "lambda:InvokeFunctionUrl"
   function_name          = aws_lambda_function.application.function_name
+  qualifier              = aws_lambda_alias.live.name
   principal              = "*"
   function_url_auth_type = "NONE"
 }
@@ -224,6 +240,7 @@ resource "aws_lambda_permission" "public_invoke" {
   statement_id             = "AllowPublicFunctionInvocationViaUrl"
   action                   = "lambda:InvokeFunction"
   function_name            = aws_lambda_function.application.function_name
+  qualifier                = aws_lambda_alias.live.name
   principal                = "*"
   invoked_via_function_url = true
 }

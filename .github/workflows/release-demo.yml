@@ -1,0 +1,119 @@
+name: Controlled demo release
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Deploy a tested revision or roll the live alias back to an existing Lambda version
+        required: true
+        type: choice
+        options:
+          - deploy
+          - rollback
+      release_ref:
+        description: Git branch, tag or full commit SHA to build
+        required: true
+        default: main
+        type: string
+      rollback_version:
+        description: Existing numeric Lambda version; required only for rollback
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: demo-release
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.release_ref }}
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.13"
+      - name: Test application
+        run: python -m unittest discover -s tests -v
+      - uses: hashicorp/setup-terraform@v4
+        with:
+          terraform_version: 1.15.9
+          terraform_wrapper: false
+      - name: Build immutable Lambda package
+        shell: pwsh
+        run: ./scripts/build-demo-package.ps1
+      - name: Check Terraform formatting
+        run: terraform fmt -check -recursive
+      - name: Initialise demo configuration
+        working-directory: infra/environments/demo
+        run: terraform init -backend=false -input=false
+      - name: Validate demo configuration
+        working-directory: infra/environments/demo
+        run: terraform validate
+      - name: Upload verified release artifact
+        if: inputs.operation == 'deploy'
+        uses: actions/upload-artifact@v7
+        with:
+          name: demo-lambda-${{ github.run_id }}
+          path: infra/environments/demo/luxury-rental-demo.zip
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: demo-release
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Validate rollback version
+        if: inputs.operation == 'rollback'
+        env:
+          ROLLBACK_VERSION: ${{ inputs.rollback_version }}
+        run: |
+          if [[ ! "$ROLLBACK_VERSION" =~ ^[1-9][0-9]*$ ]]; then
+            echo "rollback_version must be a positive Lambda version number" >&2
+            exit 1
+          fi
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_RELEASE_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+      - name: Download verified release artifact
+        if: inputs.operation == 'deploy'
+        uses: actions/download-artifact@v8
+        with:
+          name: demo-lambda-${{ github.run_id }}
+          path: release
+      - name: Publish and promote verified version
+        if: inputs.operation == 'deploy'
+        id: deploy
+        run: |
+          version=$(aws lambda update-function-code --function-name luxury-rental-demo --zip-file fileb://release/luxury-rental-demo.zip --publish --query Version --output text)
+          aws lambda wait function-updated-v2 --function-name luxury-rental-demo
+          aws lambda update-alias --function-name luxury-rental-demo --name live --function-version "$version"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+      - name: Roll live alias back
+        if: inputs.operation == 'rollback'
+        env:
+          ROLLBACK_VERSION: ${{ inputs.rollback_version }}
+        run: |
+          aws lambda get-function --function-name luxury-rental-demo --qualifier "$ROLLBACK_VERSION" > /dev/null
+          aws lambda update-alias --function-name luxury-rental-demo --name live --function-version "$ROLLBACK_VERSION"
+      - name: Release summary
+        env:
+          OPERATION: ${{ inputs.operation }}
+          DEPLOYED_VERSION: ${{ steps.deploy.outputs.version }}
+          ROLLBACK_VERSION: ${{ inputs.rollback_version }}
+          RELEASE_REF: ${{ inputs.release_ref }}
+        run: |
+          echo "### Demo release" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Operation: $OPERATION" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Source ref: $RELEASE_REF" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Live Lambda version: ${DEPLOYED_VERSION:-$ROLLBACK_VERSION}" >> "$GITHUB_STEP_SUMMARY"

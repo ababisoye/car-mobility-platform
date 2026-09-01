@@ -19,6 +19,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Preserves immutable quote revisions and exposes only the latest customer quote
 - Queues booking, quote and assignment events in a provider-neutral notification outbox
 - Creates payment requests from approved quotes and verifies signed, idempotent payment webhooks
+- Promotes immutable Lambda versions through a stable alias with a manual, OIDC-based rollback workflow
 - Automated Python tests plus Terraform formatting and validation in CI
 - Documented a production growth path without forcing production cost on the MVP
 
@@ -119,6 +120,9 @@ infra/
     demo/                 Zero-funding serverless booking demonstration
     nonprod/              Reduced-cost integration/staging foundation
     production/           Production safety defaults
+  github-release-role/    Least-privilege GitHub OIDC role for Lambda releases
+docs/
+  release-runbook.md      Manual promotion, rollback and emergency checks
 scripts/
   generate-admin-password-hash.py  Create the demo dashboard credential hash
   preview-demo.py         Local preview with in-memory booking storage
@@ -229,6 +233,12 @@ The Lambda tests can also be run independently:
 python -m unittest discover -s tests -v
 ```
 
+## Controlled releases
+
+The `Controlled demo release` workflow is manual and dormant until its protected GitHub environment and AWS OIDC role are configured. It validates and packages a selected Git revision before requesting short-lived AWS credentials, then promotes an immutable Lambda version through the `live` alias. See the [release and rollback runbook](docs/release-runbook.md).
+
+Creating or committing this workflow does not deploy infrastructure and does not create AWS charges. Running its deployment operation requires an existing demo stack and explicit GitHub environment approval.
+
 ## Skills demonstrated
 
 AWS serverless architecture, Terraform module design, IAM least privilege, DynamoDB data lifecycle, Lambda packaging, cost controls, Python testing, GitHub Actions CI and environment separation.
@@ -236,4 +246,4 @@ AWS serverless architecture, Terraform module design, IAM least privilege, Dynam
 ## Roadmap
 
 - Real payment-provider and notification delivery adapters
-- Production deployment with controlled promotion and rollback
+- Production-grade identity, observability and data migration controls
