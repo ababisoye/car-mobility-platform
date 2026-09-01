@@ -40,3 +40,14 @@ variable "admin_password_hash" {
     error_message = "admin_password_hash must use the iterations:salt:digest format produced by the helper script."
   }
 }
+
+variable "payment_webhook_secret" {
+  description = "Shared HMAC secret used to verify payment-provider webhook requests. Use at least 32 characters."
+  type        = string
+  sensitive   = true
+
+  validation {
+    condition     = length(var.payment_webhook_secret) >= 32
+    error_message = "payment_webhook_secret must contain at least 32 characters."
+  }
+}

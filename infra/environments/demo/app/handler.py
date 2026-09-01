@@ -17,15 +17,18 @@ VEHICLES_TABLE_NAME = os.environ["VEHICLES_TABLE"]
 CHAUFFEURS_TABLE_NAME = os.environ["CHAUFFEURS_TABLE"]
 QUOTES_TABLE_NAME = os.environ["QUOTES_TABLE"]
 NOTIFICATIONS_TABLE_NAME = os.environ["NOTIFICATIONS_TABLE"]
+PAYMENTS_TABLE_NAME = os.environ["PAYMENTS_TABLE"]
 TABLE = boto3.resource("dynamodb").Table(BOOKINGS_TABLE_NAME)
 VEHICLES = boto3.resource("dynamodb").Table(VEHICLES_TABLE_NAME)
 CHAUFFEURS = boto3.resource("dynamodb").Table(CHAUFFEURS_TABLE_NAME)
 QUOTES = boto3.resource("dynamodb").Table(QUOTES_TABLE_NAME)
 NOTIFICATIONS = boto3.resource("dynamodb").Table(NOTIFICATIONS_TABLE_NAME)
+PAYMENTS = boto3.resource("dynamodb").Table(PAYMENTS_TABLE_NAME)
 DYNAMO_CLIENT = boto3.client("dynamodb")
 ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*")
 TTL_DAYS = int(os.environ.get("BOOKING_TTL_DAYS", "30"))
 ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", "")
+PAYMENT_WEBHOOK_SECRET = os.environ.get("PAYMENT_WEBHOOK_SECRET", "")
 HUBS = {"Lagos", "Ogun", "Oyo", "Abuja"}
 TRIP_TYPES = {"Local", "Interstate"}
 BOOKING_STATUSES = {"REQUESTED", "REVIEWING", "QUOTED", "CONFIRMED", "ASSIGNED", "IN_PROGRESS", "COMPLETED", "DECLINED", "CANCELLED"}
@@ -371,6 +374,95 @@ def latest_quote(booking_id):
     return response(200, {key: quote[key] for key in ("booking_id", "version", "amount_ngn", "valid_until", "notes", "status")})
 
 
+def booking_payments(booking_id):
+    items = [item for item in PAYMENTS.scan(Limit=100).get("Items", []) if item.get("record_type") == "PAYMENT" and item.get("booking_id") == booking_id]
+    return sorted(items, key=lambda item: item.get("created_at", 0), reverse=True)
+
+
+def manage_payments(event, booking_id):
+    denied = require_admin(event)
+    if denied:
+        return denied
+    booking = TABLE.get_item(Key={"booking_id": booking_id}).get("Item")
+    if not booking:
+        return response(404, {"error": "Booking request not found."})
+    method = event.get("requestContext", {}).get("http", {}).get("method")
+    payments = booking_payments(booking_id)
+    if method == "GET":
+        return response(200, {"payments": payments, "count": len(payments)})
+    quotes = booking_quotes(booking_id)
+    if not quotes:
+        return response(409, {"error": "Issue a quote before creating a payment request."})
+    if any(item.get("status") == "PENDING" for item in payments):
+        return response(409, {"error": "A payment request is already pending for this booking."})
+    quote = quotes[0]
+    if datetime.fromisoformat(quote["valid_until"]) <= datetime.now():
+        return response(409, {"error": "The latest quote has expired; issue a new quote first."})
+    now = int(time.time())
+    payment_id = str(uuid.uuid4())
+    item = {
+        "record_id": f"PAYMENT#{payment_id}", "record_type": "PAYMENT", "payment_id": payment_id,
+        "booking_id": booking_id, "quote_id": quote["quote_id"], "amount_ngn": quote["amount_ngn"],
+        "currency": "NGN", "provider": "PENDING_ADAPTER", "status": "PENDING", "created_at": now,
+        "expires_at": now + (30 * 86400),
+    }
+    PAYMENTS.put_item(Item=item, ConditionExpression="attribute_not_exists(record_id)")
+    TABLE.update_item(Key={"booking_id": booking_id}, UpdateExpression="SET payment_id = :payment_id, payment_status = :payment_status, updated_at = :updated", ExpressionAttributeValues={":payment_id": payment_id, ":payment_status": "PENDING", ":updated": now})
+    queue_notification(booking_id, "PAYMENT_REQUESTED", f"A payment request for NGN {int(quote['amount_ngn']):,} is ready.")
+    return response(201, item)
+
+
+def latest_payment(booking_id):
+    payments = booking_payments(booking_id)
+    if not payments:
+        return response(404, {"error": "No payment request exists for this booking."})
+    payment = payments[0]
+    return response(200, {key: payment[key] for key in ("payment_id", "booking_id", "amount_ngn", "currency", "status", "created_at")})
+
+
+def payment_webhook(event):
+    if not PAYMENT_WEBHOOK_SECRET:
+        return response(503, {"error": "Payment webhook verification is not configured."})
+    raw_body = event.get("body") or ""
+    headers = {str(key).lower(): value for key, value in (event.get("headers") or {}).items()}
+    supplied = clean(headers.get("x-webhook-signature"), 128).lower()
+    expected = hmac.new(PAYMENT_WEBHOOK_SECRET.encode("utf-8"), raw_body.encode("utf-8"), hashlib.sha256).hexdigest()
+    if not supplied or not hmac.compare_digest(supplied, expected):
+        return response(401, {"error": "Invalid webhook signature."})
+    try:
+        data = json.loads(raw_body)
+    except json.JSONDecodeError:
+        return response(400, {"error": "Request body must be valid JSON."})
+    event_id = clean(data.get("event_id"), 100)
+    payment_id = clean(data.get("payment_id"), 100)
+    status = clean(data.get("status"), 20).upper()
+    if not event_id or not payment_id or status not in {"PAID", "FAILED"}:
+        return response(400, {"error": "Provide event_id, payment_id and a PAID or FAILED status."})
+    event_key = f"EVENT#{event_id}"
+    existing_event = PAYMENTS.get_item(Key={"record_id": event_key}).get("Item")
+    if existing_event:
+        return response(200, {"event_id": event_id, "payment_id": existing_event["payment_id"], "status": existing_event["status"], "duplicate": True})
+    payment_key = f"PAYMENT#{payment_id}"
+    payment = PAYMENTS.get_item(Key={"record_id": payment_key}).get("Item")
+    if not payment:
+        return response(404, {"error": "Payment request not found."})
+    if payment.get("status") == "PAID" and status != "PAID":
+        return response(409, {"error": "A confirmed payment cannot be changed to failed."})
+    now = int(time.time())
+    updated = PAYMENTS.update_item(Key={"record_id": payment_key}, UpdateExpression="SET #s = :status, updated_at = :updated", ConditionExpression="attribute_exists(record_id)", ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":status": status, ":updated": now}, ReturnValues="ALL_NEW")["Attributes"]
+    try:
+        PAYMENTS.put_item(Item={"record_id": event_key, "record_type": "WEBHOOK_EVENT", "event_id": event_id, "payment_id": payment_id, "status": status, "created_at": now, "expires_at": now + (30 * 86400)}, ConditionExpression="attribute_not_exists(record_id)")
+    except Exception as error:
+        error_response = getattr(error, "response", {})
+        if error_response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return response(200, {"event_id": event_id, "payment_id": payment_id, "status": status, "duplicate": True})
+        raise
+    booking_status = "CONFIRMED" if status == "PAID" else "QUOTED"
+    TABLE.update_item(Key={"booking_id": payment["booking_id"]}, UpdateExpression="SET #s = :booking_status, payment_status = :payment_status, updated_at = :updated", ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":booking_status": booking_status, ":payment_status": status, ":updated": now})
+    queue_notification(payment["booking_id"], "PAYMENT_CONFIRMED" if status == "PAID" else "PAYMENT_FAILED", "Your payment was confirmed." if status == "PAID" else "Your payment attempt was not successful.")
+    return response(200, {"event_id": event_id, "payment_id": payment_id, "status": updated["status"], "duplicate": False})
+
+
 def notification_outbox(event, notification_id=None):
     denied = require_admin(event)
     if denied:
@@ -447,7 +539,7 @@ const vehicleStatuses=['AVAILABLE','RESERVED','ON_TRIP','MAINTENANCE','INACTIVE'
 function field(parent,text,cls=''){const node=document.createElement('div');node.textContent=text||'—';if(cls)node.className=cls;parent.append(node)}
 async function api(path,options={}){options.headers={...(options.headers||{}),'x-admin-password':password.value};const response=await fetch(path,options),data=await response.json();if(!response.ok)throw Error(data.error||'Request failed');return data}
 function choice(items,idField,label){const select=document.createElement('select'),placeholder=document.createElement('option');placeholder.value='';placeholder.textContent=label;select.append(placeholder);for(const item of items){const option=document.createElement('option');option.value=item[idField];option.textContent=item.name;select.append(option)}return select}
-function render(items,vehicleItems,chauffeurItems){cards.replaceChildren();count.textContent=items.length+' request'+(items.length===1?'':'s');for(const item of items){const card=document.createElement('article');card.className='card';const who=document.createElement('div');field(who,item.name,'name');field(who,item.phone);field(who,item.email);field(who,item.booking_id,'ref');const trip=document.createElement('div');field(trip,item.trip_type+' · '+item.hub,'name');field(trip,item.pickup+' → '+item.destination);field(trip,item.pickup_at+' → '+item.end_at);const vehicle=document.createElement('div');field(vehicle,item.vehicle_preference||'No vehicle preference','name');field(vehicle,item.notes||'No notes','muted');if(item.quote_version)field(vehicle,'Latest quote v'+item.quote_version+' · NGN '+Number(item.quote_amount_ngn).toLocaleString(),'name');const quoteAmount=document.createElement('input'),quoteExpiry=document.createElement('input'),quoteNotes=document.createElement('input'),issueQuote=document.createElement('button');quoteAmount.type='number';quoteAmount.min='1';quoteAmount.placeholder='Amount in NGN';quoteAmount.setAttribute('aria-label','Quote amount in NGN');quoteExpiry.type='datetime-local';quoteExpiry.setAttribute('aria-label','Quote expiry');quoteNotes.placeholder='Quote notes';quoteNotes.setAttribute('aria-label','Quote notes');issueQuote.textContent=item.quote_version?'Issue revision':'Issue quote';issueQuote.addEventListener('click',async()=>{if(!quoteAmount.value||!quoteExpiry.value){message.textContent='Enter a quote amount and expiry.';return}issueQuote.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id)+'/quotes',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({amount_ngn:Number(quoteAmount.value),valid_until:quoteExpiry.value,notes:quoteNotes.value})});await load()}catch(error){message.textContent=error.message}finally{issueQuote.disabled=false}});vehicle.append(quoteAmount,quoteExpiry,quoteNotes,issueQuote);const control=document.createElement('div'),select=document.createElement('select');for(const status of statuses){const option=document.createElement('option');option.value=option.textContent=status;option.selected=status===item.status;select.append(option)}select.addEventListener('change',async()=>{select.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:select.value})})}catch(error){message.textContent=error.message}finally{select.disabled=false}});control.append(select);if(!item.vehicle_id&&!item.chauffeur_id){const availableVehicles=vehicleItems.filter(resource=>resource.hub===item.hub&&resource.status==='AVAILABLE'),availableChauffeurs=chauffeurItems.filter(resource=>resource.hub===item.hub&&resource.status==='AVAILABLE'),vehicleChoice=choice(availableVehicles,'vehicle_id','Select vehicle'),chauffeurChoice=choice(availableChauffeurs,'chauffeur_id','Select chauffeur'),assign=document.createElement('button');assign.textContent='Assign';assign.addEventListener('click',async()=>{if(!vehicleChoice.value||!chauffeurChoice.value){message.textContent='Select both a vehicle and chauffeur.';return}assign.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id)+'/assignment',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({vehicle_id:vehicleChoice.value,chauffeur_id:chauffeurChoice.value})});await load()}catch(error){message.textContent=error.message}finally{assign.disabled=false}});control.append(vehicleChoice,chauffeurChoice,assign)}else{field(control,'Resources assigned','name')}card.append(who,trip,vehicle,control);cards.append(card)}}
+function render(items,vehicleItems,chauffeurItems){cards.replaceChildren();count.textContent=items.length+' request'+(items.length===1?'':'s');for(const item of items){const card=document.createElement('article');card.className='card';const who=document.createElement('div');field(who,item.name,'name');field(who,item.phone);field(who,item.email);field(who,item.booking_id,'ref');const trip=document.createElement('div');field(trip,item.trip_type+' · '+item.hub,'name');field(trip,item.pickup+' → '+item.destination);field(trip,item.pickup_at+' → '+item.end_at);const vehicle=document.createElement('div');field(vehicle,item.vehicle_preference||'No vehicle preference','name');field(vehicle,item.notes||'No notes','muted');if(item.quote_version){field(vehicle,'Latest quote v'+item.quote_version+' · NGN '+Number(item.quote_amount_ngn).toLocaleString(),'name');field(vehicle,'Payment: '+(item.payment_status||'NOT REQUESTED'),'muted')}const quoteAmount=document.createElement('input'),quoteExpiry=document.createElement('input'),quoteNotes=document.createElement('input'),issueQuote=document.createElement('button');quoteAmount.type='number';quoteAmount.min='1';quoteAmount.placeholder='Amount in NGN';quoteAmount.setAttribute('aria-label','Quote amount in NGN');quoteExpiry.type='datetime-local';quoteExpiry.setAttribute('aria-label','Quote expiry');quoteNotes.placeholder='Quote notes';quoteNotes.setAttribute('aria-label','Quote notes');issueQuote.textContent=item.quote_version?'Issue revision':'Issue quote';issueQuote.addEventListener('click',async()=>{if(!quoteAmount.value||!quoteExpiry.value){message.textContent='Enter a quote amount and expiry.';return}issueQuote.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id)+'/quotes',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({amount_ngn:Number(quoteAmount.value),valid_until:quoteExpiry.value,notes:quoteNotes.value})});await load()}catch(error){message.textContent=error.message}finally{issueQuote.disabled=false}});vehicle.append(quoteAmount,quoteExpiry,quoteNotes,issueQuote);if(item.quote_version&&item.payment_status!=='PENDING'&&item.payment_status!=='PAID'){const requestPayment=document.createElement('button');requestPayment.textContent='Create payment request';requestPayment.addEventListener('click',async()=>{requestPayment.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id)+'/payments',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});await load()}catch(error){message.textContent=error.message}finally{requestPayment.disabled=false}});vehicle.append(requestPayment)}const control=document.createElement('div'),select=document.createElement('select');for(const status of statuses){const option=document.createElement('option');option.value=option.textContent=status;option.selected=status===item.status;select.append(option)}select.addEventListener('change',async()=>{select.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:select.value})})}catch(error){message.textContent=error.message}finally{select.disabled=false}});control.append(select);if(!item.vehicle_id&&!item.chauffeur_id){const availableVehicles=vehicleItems.filter(resource=>resource.hub===item.hub&&resource.status==='AVAILABLE'),availableChauffeurs=chauffeurItems.filter(resource=>resource.hub===item.hub&&resource.status==='AVAILABLE'),vehicleChoice=choice(availableVehicles,'vehicle_id','Select vehicle'),chauffeurChoice=choice(availableChauffeurs,'chauffeur_id','Select chauffeur'),assign=document.createElement('button');assign.textContent='Assign';assign.addEventListener('click',async()=>{if(!vehicleChoice.value||!chauffeurChoice.value){message.textContent='Select both a vehicle and chauffeur.';return}assign.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id)+'/assignment',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({vehicle_id:vehicleChoice.value,chauffeur_id:chauffeurChoice.value})});await load()}catch(error){message.textContent=error.message}finally{assign.disabled=false}});control.append(vehicleChoice,chauffeurChoice,assign)}else{field(control,'Resources assigned','name')}card.append(who,trip,vehicle,control);cards.append(card)}}
 function renderResources(target,items,type){target.replaceChildren();const idField=type==='vehicles'?'vehicle_id':'chauffeur_id',options=type==='vehicles'?vehicleStatuses:chauffeurStatuses;for(const item of items){const card=document.createElement('article');card.className='resource';const details=document.createElement('div');field(details,item.name,'name');field(details,item.hub+(item.category?' · '+item.category:'')+(item.ownership?' · '+item.ownership:''));const select=document.createElement('select');for(const status of options){const option=document.createElement('option');option.value=option.textContent=status;option.selected=status===item.status;select.append(option)}select.addEventListener('change',async()=>{select.disabled=true;try{await api('/admin/'+type+'/'+encodeURIComponent(item[idField]),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:select.value})})}catch(error){message.textContent=error.message}finally{select.disabled=false}});card.append(details,select);target.append(card)}}
 function renderNotifications(items){notifications.replaceChildren();for(const item of items){const card=document.createElement('article');card.className='notification';const details=document.createElement('div');field(details,item.event_type.replaceAll('_',' '),'name');field(details,item.message);field(details,'Booking '+item.booking_id,'ref');const action=document.createElement('button');action.textContent=item.status==='PENDING'?'Mark processed':item.status;action.disabled=item.status!=='PENDING';action.addEventListener('click',async()=>{action.disabled=true;try{await api('/admin/notifications/'+encodeURIComponent(item.notification_id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:'PROCESSED'})});await load()}catch(error){message.textContent=error.message}});card.append(details,action);notifications.append(card)}}
 async function load(){message.textContent='';try{const [bookingData,vehicleData,chauffeurData,notificationData]=await Promise.all([api('/admin/bookings'),api('/admin/vehicles'),api('/admin/chauffeurs'),api('/admin/notifications')]);login.classList.add('hidden');dashboard.classList.remove('hidden');render(bookingData.bookings,vehicleData.items,chauffeurData.items);renderResources(vehicles,vehicleData.items,'vehicles');renderResources(chauffeurs,chauffeurData.items,'chauffeurs');renderNotifications(notificationData.notifications)}catch(error){message.textContent=error.message}}
@@ -474,6 +566,8 @@ def lambda_handler(event, context):
         return assign_booking(event, html.escape(path.split("/")[-2]))
     if method in {"GET", "POST"} and path.startswith("/admin/bookings/") and path.endswith("/quotes"):
         return manage_quotes(event, html.escape(path.split("/")[-2]))
+    if method in {"GET", "POST"} and path.startswith("/admin/bookings/") and path.endswith("/payments"):
+        return manage_payments(event, html.escape(path.split("/")[-2]))
     if method == "PATCH" and path.startswith("/admin/bookings/"):
         return update_booking(event, html.escape(path.rsplit("/", 1)[-1]))
     if method in {"GET", "POST"} and path == "/admin/vehicles":
@@ -490,8 +584,12 @@ def lambda_handler(event, context):
         return notification_outbox(event, html.escape(path.rsplit("/", 1)[-1]))
     if method == "POST" and path == "/bookings":
         return create_booking(event)
+    if method == "POST" and path == "/webhooks/payments":
+        return payment_webhook(event)
     if method == "GET" and path.startswith("/bookings/"):
         if path.endswith("/quote"):
             return latest_quote(html.escape(path.split("/")[-2]))
+        if path.endswith("/payment"):
+            return latest_payment(html.escape(path.split("/")[-2]))
         return booking_status(html.escape(path.rsplit("/", 1)[-1]))
     return response(404, {"error": "Not found."})

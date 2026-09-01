@@ -28,6 +28,11 @@ output "notifications_table" {
   value       = aws_dynamodb_table.notifications.name
 }
 
+output "payments_table" {
+  description = "DynamoDB table for payment requests and idempotent webhook events."
+  value       = aws_dynamodb_table.payments.name
+}
+
 output "monthly_budget_usd" {
   description = "Notification threshold; AWS Budgets alerts do not automatically stop usage."
   value       = 1

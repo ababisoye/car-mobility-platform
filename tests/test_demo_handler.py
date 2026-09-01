@@ -1,5 +1,6 @@
 import base64
 import hashlib
+import hmac
 import importlib.util
 import json
 import os
@@ -38,6 +39,12 @@ class FakeTable:
                 quote_version=ExpressionAttributeValues[":version"],
                 quote_amount_ngn=ExpressionAttributeValues[":amount"],
             )
+        if ":payment_id" in ExpressionAttributeValues:
+            item["payment_id"] = ExpressionAttributeValues[":payment_id"]
+            item["payment_status"] = ExpressionAttributeValues[":payment_status"]
+        if ":booking_status" in ExpressionAttributeValues:
+            item["status"] = ExpressionAttributeValues[":booking_status"]
+            item["payment_status"] = ExpressionAttributeValues[":payment_status"]
         item["updated_at"] = ExpressionAttributeValues[":updated"]
         return {"Attributes": item}
 
@@ -48,6 +55,7 @@ FAKE_TABLES = {
     "test-chauffeurs": FakeTable(),
     "test-quotes": FakeTable(),
     "test-notifications": FakeTable(),
+    "test-payments": FakeTable(),
 }
 
 
@@ -82,6 +90,8 @@ os.environ["VEHICLES_TABLE"] = "test-vehicles"
 os.environ["CHAUFFEURS_TABLE"] = "test-chauffeurs"
 os.environ["QUOTES_TABLE"] = "test-quotes"
 os.environ["NOTIFICATIONS_TABLE"] = "test-notifications"
+os.environ["PAYMENTS_TABLE"] = "test-payments"
+os.environ["PAYMENT_WEBHOOK_SECRET"] = "test-payment-webhook-secret-32-characters"
 os.environ["BOOKING_TTL_DAYS"] = "30"
 os.environ["ALLOWED_ORIGIN"] = "*"
 test_salt = b"unit-test-salt"
@@ -274,6 +284,37 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertEqual(json.loads(second["body"])["version"], 2)
         self.assertEqual(json.loads(history["body"])["count"], 2)
         self.assertEqual(json.loads(latest["body"])["amount_ngn"], 275000)
+
+    def test_signed_payment_webhook_is_idempotent(self):
+        headers = {"x-admin-password": "test-admin-password"}
+        booking = handler.lambda_handler(
+            event("POST", "/bookings", {"name": "Payment Test", "phone": "+2348000000006", "hub": "Abuja", "trip_type": "Local", "pickup": "Maitama", "destination": "Airport", "pickup_at": "2027-03-01T09:00", "end_at": "2027-03-01T12:00"}),
+            None,
+        )
+        booking_id = json.loads(booking["body"])["booking_id"]
+        handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/quotes", {"amount_ngn": 180000, "valid_until": "2027-02-25T18:00"}, headers), None)
+        created = handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/payments", {}, headers), None)
+        self.assertEqual(created["statusCode"], 201)
+        payment_id = json.loads(created["body"])["payment_id"]
+
+        webhook = event("POST", "/webhooks/payments", {"event_id": "provider-event-1", "payment_id": payment_id, "status": "PAID"})
+        webhook["headers"] = {"x-webhook-signature": hmac.new(os.environ["PAYMENT_WEBHOOK_SECRET"].encode(), webhook["body"].encode(), hashlib.sha256).hexdigest()}
+        first = handler.lambda_handler(webhook, None)
+        duplicate = handler.lambda_handler(webhook, None)
+        public_status = handler.lambda_handler(event("GET", f"/bookings/{booking_id}/payment"), None)
+        booking_status = handler.lambda_handler(event("GET", f"/bookings/{booking_id}"), None)
+        notifications = handler.lambda_handler(event("GET", "/admin/notifications", headers=headers), None)
+        payment_confirmations = [item for item in json.loads(notifications["body"])["notifications"] if item.get("booking_id") == booking_id and item.get("event_type") == "PAYMENT_CONFIRMED"]
+        self.assertEqual(first["statusCode"], 200)
+        self.assertFalse(json.loads(first["body"])["duplicate"])
+        self.assertTrue(json.loads(duplicate["body"])["duplicate"])
+        self.assertEqual(json.loads(public_status["body"])["status"], "PAID")
+        self.assertEqual(json.loads(booking_status["body"])["status"], "CONFIRMED")
+        self.assertEqual(len(payment_confirmations), 1)
+
+    def test_payment_webhook_rejects_invalid_signature(self):
+        result = handler.lambda_handler(event("POST", "/webhooks/payments", {"event_id": "bad", "payment_id": "unknown", "status": "PAID"}, {"x-webhook-signature": "invalid"}), None)
+        self.assertEqual(result["statusCode"], 401)
 
     def test_admin_can_manage_chauffeur_availability(self):
         headers = {"x-admin-password": "test-admin-password"}

@@ -38,6 +38,12 @@ class MemoryTable:
                 quote_version=ExpressionAttributeValues[":version"],
                 quote_amount_ngn=ExpressionAttributeValues[":amount"],
             )
+        if ":payment_id" in ExpressionAttributeValues:
+            item["payment_id"] = ExpressionAttributeValues[":payment_id"]
+            item["payment_status"] = ExpressionAttributeValues[":payment_status"]
+        if ":booking_status" in ExpressionAttributeValues:
+            item["status"] = ExpressionAttributeValues[":booking_status"]
+            item["payment_status"] = ExpressionAttributeValues[":payment_status"]
         item["updated_at"] = ExpressionAttributeValues[":updated"]
         return {"Attributes": item}
 
@@ -48,6 +54,7 @@ TABLES = {
     "local-chauffeurs": MemoryTable(),
     "local-quotes": MemoryTable(),
     "local-notifications": MemoryTable(),
+    "local-payments": MemoryTable(),
 }
 
 
@@ -81,6 +88,8 @@ os.environ.setdefault("VEHICLES_TABLE", "local-vehicles")
 os.environ.setdefault("CHAUFFEURS_TABLE", "local-chauffeurs")
 os.environ.setdefault("QUOTES_TABLE", "local-quotes")
 os.environ.setdefault("NOTIFICATIONS_TABLE", "local-notifications")
+os.environ.setdefault("PAYMENTS_TABLE", "local-payments")
+os.environ.setdefault("PAYMENT_WEBHOOK_SECRET", "local-payment-webhook-secret-32-characters")
 local_salt = b"local-preview-only"
 local_digest = hashlib.pbkdf2_hmac("sha256", b"demo-admin", local_salt, 10_000)
 os.environ.setdefault(

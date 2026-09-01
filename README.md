@@ -18,6 +18,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Rejects unavailable, wrong-hub and overlapping resource assignments
 - Preserves immutable quote revisions and exposes only the latest customer quote
 - Queues booking, quote and assignment events in a provider-neutral notification outbox
+- Creates payment requests from approved quotes and verifies signed, idempotent payment webhooks
 - Automated Python tests plus Terraform formatting and validation in CI
 - Documented a production growth path without forcing production cost on the MVP
 
@@ -32,6 +33,7 @@ flowchart LR
     Lambda --> Chauffeurs[(DynamoDB chauffeurs)]
     Lambda --> Quotes[(DynamoDB quote versions)]
     Lambda --> Outbox[(DynamoDB notification outbox)]
+    Lambda --> Payments[(DynamoDB payments + webhook events)]
     Lambda --> Logs[CloudWatch Logs<br/>1-day retention]
     Budget[AWS Budget<br/>USD 1 alerts] -. monitors .-> Lambda
     Budget -. monitors .-> Bookings
@@ -39,6 +41,7 @@ flowchart LR
     Budget -. monitors .-> Chauffeurs
     Budget -. monitors .-> Quotes
     Budget -. monitors .-> Outbox
+    Budget -. monitors .-> Payments
 ```
 
 The zero-funding path deliberately omits API Gateway, a load balancer, NAT Gateway, containers and RDS. The reusable production foundation remains available for a later, funded phase.
@@ -67,12 +70,12 @@ The recommended starting point is `infra/environments/demo`. It replaces all alw
 
 - One Python Lambda function with 128 MB memory and concurrency capped at one
 - One Lambda Function URL, with no load balancer or API Gateway
-- Five DynamoDB tables for bookings, vehicles, chauffeurs, quote versions and notifications, each using 1 provisioned read and 1 provisioned write unit
+- Six DynamoDB tables for bookings, vehicles, chauffeurs, quote versions, notifications and payment events, each using 1 provisioned read and 1 provisioned write unit
 - One-day CloudWatch log retention
 - Automatic deletion of booking requests after 30 days
 - A USD 1 actual and forecast budget notification
 
-The function serves the mobile booking form and its small API from one deployment. It is a demonstration, not a production rental platform. It deliberately does not collect payments or identity documents.
+The function serves the mobile booking form and its small API from one deployment. It is a demonstration, not a production rental platform. It records simulated payment state but deliberately does not collect card details, transfer money or collect identity documents.
 
 AWS Budgets only sends alerts; it is not a hard spending cap. A new AWS Free account plan prevents charges while the plan is active, but it ends after six months or when credits are exhausted. Keep a local export of anything important.
 
@@ -179,9 +182,13 @@ terraform output -raw demo_url
 
 Paste the generated hash into `admin_password_hash` in the ignored `terraform.tfvars` file. The plaintext password is never written by the helper. After deployment, append `/admin` to the demo URL to open the operations dashboard.
 
+Set `payment_webhook_secret` to a separate random value of at least 32 characters. A payment provider adapter must sign the exact webhook request body with HMAC-SHA256 and send the hexadecimal digest in `x-webhook-signature`; never reuse the admin password or commit a real secret.
+
 The dashboard authentication is deliberately small and cost-free: HTTPS carries the password and Lambda verifies it against a salted PBKDF2 hash. For production, replace this mechanism with Cognito or another managed identity provider, MFA, role-based access and an audit trail.
 
 Notification events are stored but not sent in zero-funding mode. A later provider adapter can deliver them by email, SMS or WhatsApp without coupling booking logic to one vendor.
+
+Payment requests are also provider-neutral. Admins create one from the latest quote at `POST /admin/bookings/{booking_id}/payments`; customers can check `GET /bookings/{booking_id}/payment`; and a future provider posts signed status events to `POST /webhooks/payments`. Webhook event IDs are retained for 30 days so retries do not apply the same event twice.
 
 Destroy the demo when it is no longer needed:
 
@@ -228,5 +235,5 @@ AWS serverless architecture, Terraform module design, IAM least privilege, Dynam
 
 ## Roadmap
 
-- Payment-provider adapter with signed, idempotent webhooks
+- Real payment-provider and notification delivery adapters
 - Production deployment with controlled promotion and rollback
