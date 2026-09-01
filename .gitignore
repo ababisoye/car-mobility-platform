@@ -1,0 +1,34 @@
+# Terraform working data and local state
+**/.terraform/*
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.zip
+crash.log
+crash.*.log
+
+# Local variable and backend configuration can contain account details
+*.tfvars
+!*.tfvars.example
+*.hcl
+!*.hcl.example
+
+# Generated overrides
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Python cache and local environments
+__pycache__/
+*.py[cod]
+.venv/
+
+# Project-local validation binaries
+.tools/
