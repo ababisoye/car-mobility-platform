@@ -29,7 +29,15 @@ class MemoryTable:
 
     def update_item(self, Key, ExpressionAttributeValues, **_kwargs):
         item = self.items[next(iter(Key.values()))]
-        item["status"] = ExpressionAttributeValues[":status"]
+        if ":status" in ExpressionAttributeValues:
+            item["status"] = ExpressionAttributeValues[":status"]
+        if ":quoted" in ExpressionAttributeValues:
+            item.update(
+                status=ExpressionAttributeValues[":quoted"],
+                latest_quote_id=ExpressionAttributeValues[":quote_id"],
+                quote_version=ExpressionAttributeValues[":version"],
+                quote_amount_ngn=ExpressionAttributeValues[":amount"],
+            )
         item["updated_at"] = ExpressionAttributeValues[":updated"]
         return {"Attributes": item}
 
@@ -38,6 +46,7 @@ TABLES = {
     "local-bookings": MemoryTable(),
     "local-vehicles": MemoryTable(),
     "local-chauffeurs": MemoryTable(),
+    "local-quotes": MemoryTable(),
 }
 
 
@@ -69,6 +78,7 @@ sys.modules["boto3"] = fake_boto3
 os.environ.setdefault("BOOKINGS_TABLE", "local-bookings")
 os.environ.setdefault("VEHICLES_TABLE", "local-vehicles")
 os.environ.setdefault("CHAUFFEURS_TABLE", "local-chauffeurs")
+os.environ.setdefault("QUOTES_TABLE", "local-quotes")
 local_salt = b"local-preview-only"
 local_digest = hashlib.pbkdf2_hmac("sha256", b"demo-admin", local_salt, 10_000)
 os.environ.setdefault(

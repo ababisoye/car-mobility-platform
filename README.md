@@ -16,6 +16,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Added vehicle and chauffeur availability management across all four hubs
 - Added atomic booking assignment that reserves a vehicle and chauffeur together
 - Rejects unavailable, wrong-hub and overlapping resource assignments
+- Preserves immutable quote revisions and exposes only the latest customer quote
 - Automated Python tests plus Terraform formatting and validation in CI
 - Documented a production growth path without forcing production cost on the MVP
 
@@ -28,11 +29,13 @@ flowchart LR
     Lambda --> Bookings[(DynamoDB bookings<br/>30-day TTL)]
     Lambda --> Vehicles[(DynamoDB vehicles)]
     Lambda --> Chauffeurs[(DynamoDB chauffeurs)]
+    Lambda --> Quotes[(DynamoDB quote versions)]
     Lambda --> Logs[CloudWatch Logs<br/>1-day retention]
     Budget[AWS Budget<br/>USD 1 alerts] -. monitors .-> Lambda
     Budget -. monitors .-> Bookings
     Budget -. monitors .-> Vehicles
     Budget -. monitors .-> Chauffeurs
+    Budget -. monitors .-> Quotes
 ```
 
 The zero-funding path deliberately omits API Gateway, a load balancer, NAT Gateway, containers and RDS. The reusable production foundation remains available for a later, funded phase.
@@ -61,7 +64,7 @@ The recommended starting point is `infra/environments/demo`. It replaces all alw
 
 - One Python Lambda function with 128 MB memory and concurrency capped at one
 - One Lambda Function URL, with no load balancer or API Gateway
-- Three DynamoDB tables for bookings, vehicles and chauffeurs, each using 1 provisioned read and 1 provisioned write unit
+- Four DynamoDB tables for bookings, vehicles, chauffeurs and quote versions, each using 1 provisioned read and 1 provisioned write unit
 - One-day CloudWatch log retention
 - Automatic deletion of booking requests after 30 days
 - A USD 1 actual and forecast budget notification
@@ -220,6 +223,5 @@ AWS serverless architecture, Terraform module design, IAM least privilege, Dynam
 
 ## Roadmap
 
-- Versioned quotation workflow
 - Notifications and payment-provider adapters
 - Production deployment with controlled promotion and rollback

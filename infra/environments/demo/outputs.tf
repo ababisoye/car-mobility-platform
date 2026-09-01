@@ -18,6 +18,11 @@ output "chauffeurs_table" {
   value       = aws_dynamodb_table.chauffeurs.name
 }
 
+output "quotes_table" {
+  description = "DynamoDB table containing immutable demo quote versions."
+  value       = aws_dynamodb_table.quotes.name
+}
+
 output "monthly_budget_usd" {
   description = "Notification threshold; AWS Budgets alerts do not automatically stop usage."
   value       = 1

@@ -29,7 +29,15 @@ class FakeTable:
 
     def update_item(self, Key, ExpressionAttributeValues, **kwargs):
         item = self.items[next(iter(Key.values()))]
-        item["status"] = ExpressionAttributeValues[":status"]
+        if ":status" in ExpressionAttributeValues:
+            item["status"] = ExpressionAttributeValues[":status"]
+        if ":quoted" in ExpressionAttributeValues:
+            item.update(
+                status=ExpressionAttributeValues[":quoted"],
+                latest_quote_id=ExpressionAttributeValues[":quote_id"],
+                quote_version=ExpressionAttributeValues[":version"],
+                quote_amount_ngn=ExpressionAttributeValues[":amount"],
+            )
         item["updated_at"] = ExpressionAttributeValues[":updated"]
         return {"Attributes": item}
 
@@ -38,6 +46,7 @@ FAKE_TABLES = {
     "test-bookings": FakeTable(),
     "test-vehicles": FakeTable(),
     "test-chauffeurs": FakeTable(),
+    "test-quotes": FakeTable(),
 }
 
 
@@ -70,6 +79,7 @@ sys.modules["boto3"] = fake_boto3
 os.environ["BOOKINGS_TABLE"] = "test-bookings"
 os.environ["VEHICLES_TABLE"] = "test-vehicles"
 os.environ["CHAUFFEURS_TABLE"] = "test-chauffeurs"
+os.environ["QUOTES_TABLE"] = "test-quotes"
 os.environ["BOOKING_TTL_DAYS"] = "30"
 os.environ["ALLOWED_ORIGIN"] = "*"
 test_salt = b"unit-test-salt"
@@ -231,6 +241,22 @@ class DemoHandlerTests(unittest.TestCase):
             None,
         )
         self.assertEqual(json.loads(updated["body"])["status"], "MAINTENANCE")
+
+    def test_quotes_are_versioned_and_latest_is_public(self):
+        headers = {"x-admin-password": "test-admin-password"}
+        booking = handler.lambda_handler(
+            event("POST", "/bookings", {"name": "Quote Test", "phone": "+2348000000004", "hub": "Lagos", "trip_type": "Interstate", "pickup": "Ikoyi", "destination": "Abeokuta", "pickup_at": "2027-01-10T09:00", "end_at": "2027-01-10T18:00"}),
+            None,
+        )
+        booking_id = json.loads(booking["body"])["booking_id"]
+        first = handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/quotes", {"amount_ngn": 250000, "valid_until": "2027-01-05T18:00", "notes": "Initial estimate"}, headers), None)
+        second = handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/quotes", {"amount_ngn": 275000, "valid_until": "2027-01-06T18:00", "notes": "Includes interstate tolls"}, headers), None)
+        history = handler.lambda_handler(event("GET", f"/admin/bookings/{booking_id}/quotes", headers=headers), None)
+        latest = handler.lambda_handler(event("GET", f"/bookings/{booking_id}/quote"), None)
+        self.assertEqual(first["statusCode"], 201)
+        self.assertEqual(json.loads(second["body"])["version"], 2)
+        self.assertEqual(json.loads(history["body"])["count"], 2)
+        self.assertEqual(json.loads(latest["body"])["amount_ngn"], 275000)
 
     def test_admin_can_manage_chauffeur_availability(self):
         headers = {"x-admin-password": "test-admin-password"}
