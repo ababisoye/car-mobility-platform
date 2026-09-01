@@ -8,8 +8,17 @@ output "bookings_table" {
   value       = aws_dynamodb_table.bookings.name
 }
 
+output "vehicles_table" {
+  description = "DynamoDB table used for demo vehicle availability."
+  value       = aws_dynamodb_table.vehicles.name
+}
+
+output "chauffeurs_table" {
+  description = "DynamoDB table used for demo chauffeur availability."
+  value       = aws_dynamodb_table.chauffeurs.name
+}
+
 output "monthly_budget_usd" {
   description = "Notification threshold; AWS Budgets alerts do not automatically stop usage."
   value       = 1
 }
-

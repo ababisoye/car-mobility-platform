@@ -26,6 +26,32 @@ resource "aws_dynamodb_table" "bookings" {
   deletion_protection_enabled = false
 }
 
+resource "aws_dynamodb_table" "vehicles" {
+  name           = "${local.name}-vehicles"
+  billing_mode   = "PROVISIONED"
+  read_capacity  = 1
+  write_capacity = 1
+  hash_key       = "vehicle_id"
+
+  attribute {
+    name = "vehicle_id"
+    type = "S"
+  }
+}
+
+resource "aws_dynamodb_table" "chauffeurs" {
+  name           = "${local.name}-chauffeurs"
+  billing_mode   = "PROVISIONED"
+  read_capacity  = 1
+  write_capacity = 1
+  hash_key       = "chauffeur_id"
+
+  attribute {
+    name = "chauffeur_id"
+    type = "S"
+  }
+}
+
 resource "aws_iam_role" "lambda" {
   name = "${local.name}-lambda"
 
@@ -57,7 +83,11 @@ resource "aws_iam_role_policy" "lambda" {
           "dynamodb:Scan",
           "dynamodb:UpdateItem"
         ]
-        Resource = aws_dynamodb_table.bookings.arn
+        Resource = [
+          aws_dynamodb_table.bookings.arn,
+          aws_dynamodb_table.vehicles.arn,
+          aws_dynamodb_table.chauffeurs.arn
+        ]
       },
       {
         Sid    = "FunctionLogging"
@@ -95,6 +125,8 @@ resource "aws_lambda_function" "application" {
   environment {
     variables = {
       BOOKINGS_TABLE      = aws_dynamodb_table.bookings.name
+      VEHICLES_TABLE      = aws_dynamodb_table.vehicles.name
+      CHAUFFEURS_TABLE    = aws_dynamodb_table.chauffeurs.name
       ALLOWED_ORIGIN      = var.allowed_origin
       BOOKING_TTL_DAYS    = "30"
       ADMIN_PASSWORD_HASH = var.admin_password_hash

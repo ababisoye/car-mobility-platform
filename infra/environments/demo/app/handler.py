@@ -12,12 +12,16 @@ import boto3
 
 
 TABLE = boto3.resource("dynamodb").Table(os.environ["BOOKINGS_TABLE"])
+VEHICLES = boto3.resource("dynamodb").Table(os.environ["VEHICLES_TABLE"])
+CHAUFFEURS = boto3.resource("dynamodb").Table(os.environ["CHAUFFEURS_TABLE"])
 ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*")
 TTL_DAYS = int(os.environ.get("BOOKING_TTL_DAYS", "30"))
 ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", "")
 HUBS = {"Lagos", "Ogun", "Oyo", "Abuja"}
 TRIP_TYPES = {"Local", "Interstate"}
 BOOKING_STATUSES = {"REQUESTED", "REVIEWING", "QUOTED", "CONFIRMED", "DECLINED", "CANCELLED"}
+VEHICLE_STATUSES = {"AVAILABLE", "RESERVED", "ON_TRIP", "MAINTENANCE", "INACTIVE"}
+CHAUFFEUR_STATUSES = {"AVAILABLE", "ASSIGNED", "OFF_DUTY", "INACTIVE"}
 
 
 def response(status, body, content_type="application/json; charset=utf-8"):
@@ -154,6 +158,66 @@ def update_booking(event, booking_id):
     return response(200, result["Attributes"])
 
 
+def availability_records(event, table, id_field, record_type):
+    denied = require_admin(event)
+    if denied:
+        return denied
+    if event.get("requestContext", {}).get("http", {}).get("method") == "GET":
+        items = table.scan(Limit=100).get("Items", [])
+        items.sort(key=lambda item: (item.get("hub", ""), item.get("name", "")))
+        return response(200, {"items": items, "count": len(items)})
+    try:
+        data = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return response(400, {"error": "Request body must be valid JSON."})
+    name = clean(data.get("name"), 100)
+    hub = clean(data.get("hub"), 20)
+    if not name or hub not in HUBS:
+        return response(400, {"error": "Provide a name and valid fleet hub."})
+    now = int(time.time())
+    item = {
+        id_field: str(uuid.uuid4()),
+        "name": name,
+        "hub": hub,
+        "status": "AVAILABLE",
+        "created_at": now,
+        "record_type": record_type,
+    }
+    if record_type == "vehicle":
+        item["category"] = clean(data.get("category"), 60)
+        item["ownership"] = clean(data.get("ownership"), 30) or "Company"
+    table.put_item(Item=item, ConditionExpression=f"attribute_not_exists({id_field})")
+    return response(201, item)
+
+
+def update_availability(event, table, id_field, record_id, statuses):
+    denied = require_admin(event)
+    if denied:
+        return denied
+    try:
+        data = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return response(400, {"error": "Request body must be valid JSON."})
+    status = clean(data.get("status"), 20).upper()
+    if status not in statuses:
+        return response(400, {"error": "Select a valid availability status."})
+    try:
+        result = table.update_item(
+            Key={id_field: record_id},
+            UpdateExpression="SET #s = :status, updated_at = :updated",
+            ConditionExpression=f"attribute_exists({id_field})",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":status": status, ":updated": int(time.time())},
+            ReturnValues="ALL_NEW",
+        )
+    except Exception as error:
+        error_response = getattr(error, "response", {})
+        if error_response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return response(404, {"error": "Availability record not found."})
+        raise
+    return response(200, result["Attributes"])
+
+
 def page():
     return """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -182,18 +246,24 @@ def admin_page():
     return """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Operations Dashboard</title><style>
-:root{color-scheme:dark;--gold:#d8b36a;--panel:#191b1f;--muted:#aeb4be}*{box-sizing:border-box}body{margin:0;background:#0d0e10;color:#f7f7f5;font:15px/1.5 system-ui,sans-serif}.wrap{max-width:1180px;margin:auto;padding:34px 18px 60px}h1{font:700 clamp(2rem,5vw,3.4rem)/1.05 Georgia,serif;margin:.3rem 0}.eyebrow{color:var(--gold);letter-spacing:.16em;text-transform:uppercase}.muted{color:var(--muted)}.login,.card{background:var(--panel);border:1px solid #30343a;border-radius:12px;padding:18px}.login{max-width:520px;margin:28px 0}.row{display:flex;gap:10px;align-items:end}label{display:block;color:#ddd;font-size:.9rem;margin-bottom:5px;flex:1}input,select{width:100%;background:#111317;color:white;border:1px solid #3a3e45;border-radius:8px;padding:11px;font:inherit}button{background:var(--gold);border:0;border-radius:8px;color:#111;font-weight:800;padding:12px 17px;cursor:pointer}.toolbar{display:flex;justify-content:space-between;align-items:center;margin:28px 0 14px}.cards{display:grid;gap:12px}.card{display:grid;grid-template-columns:1.1fr 1fr 1fr .8fr;gap:18px}.name{font-weight:800}.ref{font:12px monospace;color:#858c97;overflow-wrap:anywhere}.error{color:#ff9c9c}.hidden{display:none}@media(max-width:780px){.card{grid-template-columns:1fr}.row{align-items:stretch;flex-direction:column}}
+:root{color-scheme:dark;--gold:#d8b36a;--panel:#191b1f;--muted:#aeb4be}*{box-sizing:border-box}body{margin:0;background:#0d0e10;color:#f7f7f5;font:15px/1.5 system-ui,sans-serif}.wrap{max-width:1180px;margin:auto;padding:34px 18px 60px}h1{font:700 clamp(2rem,5vw,3.4rem)/1.05 Georgia,serif;margin:.3rem 0}h2{font:700 1.6rem Georgia,serif}.eyebrow{color:var(--gold);letter-spacing:.16em;text-transform:uppercase}.muted{color:var(--muted)}.login,.card,.panel,.resource{background:var(--panel);border:1px solid #30343a;border-radius:12px;padding:18px}.login{max-width:520px;margin:28px 0}.row{display:flex;gap:10px;align-items:end}label{display:block;color:#ddd;font-size:.9rem;margin-bottom:5px;flex:1}input,select{width:100%;background:#111317;color:white;border:1px solid #3a3e45;border-radius:8px;padding:11px;font:inherit}button{background:var(--gold);border:0;border-radius:8px;color:#111;font-weight:800;padding:12px 17px;cursor:pointer}.toolbar{display:flex;justify-content:space-between;align-items:center;margin:28px 0 14px}.cards,.resource-list{display:grid;gap:12px}.card{display:grid;grid-template-columns:1.1fr 1fr 1fr .8fr;gap:18px}.inventory{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:38px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}.form-grid button{align-self:end}.resource{display:grid;grid-template-columns:1fr .8fr;gap:12px;align-items:center}.name{font-weight:800}.ref{font:12px monospace;color:#858c97;overflow-wrap:anywhere}.error{color:#ff9c9c}.hidden{display:none}@media(max-width:780px){.card,.inventory{grid-template-columns:1fr}.row{align-items:stretch;flex-direction:column}.form-grid{grid-template-columns:1fr}}
 </style></head><body><main class="wrap"><div class="eyebrow">Demo operations</div><h1>Booking requests</h1><p class="muted">Review recent requests and update their workflow status.</p>
 <section id="login" class="login"><div class="row"><label>Admin password<input id="password" type="password" autocomplete="current-password"></label><button id="open">Open dashboard</button></div><p id="message" class="error" role="alert"></p></section>
-<section id="dashboard" class="hidden"><div class="toolbar"><strong id="count">Requests</strong><button id="refresh">Refresh</button></div><div id="cards" class="cards"></div></section></main>
+<section id="dashboard" class="hidden"><div class="toolbar"><strong id="count">Requests</strong><button id="refresh">Refresh all</button></div><div id="cards" class="cards"></div>
+<div class="inventory"><section class="panel"><h2>Vehicles</h2><form id="vehicle-form" class="form-grid"><label>Vehicle name<input name="name" required placeholder="Mercedes GLE"></label><label>Hub<select name="hub" required><option>Lagos</option><option>Ogun</option><option>Oyo</option><option>Abuja</option></select></label><label>Category<input name="category" placeholder="Executive SUV"></label><label>Ownership<select name="ownership"><option>Company</option><option>Partner</option></select></label><button type="submit">Add vehicle</button></form><div id="vehicles" class="resource-list"></div></section>
+<section class="panel"><h2>Chauffeurs</h2><form id="chauffeur-form" class="form-grid"><label>Chauffeur name<input name="name" required></label><label>Hub<select name="hub" required><option>Lagos</option><option>Ogun</option><option>Oyo</option><option>Abuja</option></select></label><button type="submit">Add chauffeur</button></form><div id="chauffeurs" class="resource-list"></div></section></div></section></main>
 <script>
-const login=document.querySelector('#login'),dashboard=document.querySelector('#dashboard'),cards=document.querySelector('#cards'),message=document.querySelector('#message'),password=document.querySelector('#password'),count=document.querySelector('#count');
+const login=document.querySelector('#login'),dashboard=document.querySelector('#dashboard'),cards=document.querySelector('#cards'),message=document.querySelector('#message'),password=document.querySelector('#password'),count=document.querySelector('#count'),vehicles=document.querySelector('#vehicles'),chauffeurs=document.querySelector('#chauffeurs');
 const statuses=['REQUESTED','REVIEWING','QUOTED','CONFIRMED','DECLINED','CANCELLED'];
+const vehicleStatuses=['AVAILABLE','RESERVED','ON_TRIP','MAINTENANCE','INACTIVE'],chauffeurStatuses=['AVAILABLE','ASSIGNED','OFF_DUTY','INACTIVE'];
 function field(parent,text,cls=''){const node=document.createElement('div');node.textContent=text||'—';if(cls)node.className=cls;parent.append(node)}
 async function api(path,options={}){options.headers={...(options.headers||{}),'x-admin-password':password.value};const response=await fetch(path,options),data=await response.json();if(!response.ok)throw Error(data.error||'Request failed');return data}
 function render(items){cards.replaceChildren();count.textContent=items.length+' request'+(items.length===1?'':'s');for(const item of items){const card=document.createElement('article');card.className='card';const who=document.createElement('div');field(who,item.name,'name');field(who,item.phone);field(who,item.email);field(who,item.booking_id,'ref');const trip=document.createElement('div');field(trip,item.trip_type+' · '+item.hub,'name');field(trip,item.pickup+' → '+item.destination);field(trip,item.pickup_at);const vehicle=document.createElement('div');field(vehicle,item.vehicle_preference||'No vehicle preference','name');field(vehicle,item.notes||'No notes','muted');const control=document.createElement('div'),select=document.createElement('select');for(const status of statuses){const option=document.createElement('option');option.value=option.textContent=status;option.selected=status===item.status;select.append(option)}select.addEventListener('change',async()=>{select.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:select.value})})}catch(error){message.textContent=error.message}finally{select.disabled=false}});control.append(select);card.append(who,trip,vehicle,control);cards.append(card)}}
-async function load(){message.textContent='';try{const data=await api('/admin/bookings');login.classList.add('hidden');dashboard.classList.remove('hidden');render(data.bookings)}catch(error){message.textContent=error.message}}
+function renderResources(target,items,type){target.replaceChildren();const idField=type==='vehicles'?'vehicle_id':'chauffeur_id',options=type==='vehicles'?vehicleStatuses:chauffeurStatuses;for(const item of items){const card=document.createElement('article');card.className='resource';const details=document.createElement('div');field(details,item.name,'name');field(details,item.hub+(item.category?' · '+item.category:'')+(item.ownership?' · '+item.ownership:''));const select=document.createElement('select');for(const status of options){const option=document.createElement('option');option.value=option.textContent=status;option.selected=status===item.status;select.append(option)}select.addEventListener('change',async()=>{select.disabled=true;try{await api('/admin/'+type+'/'+encodeURIComponent(item[idField]),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:select.value})})}catch(error){message.textContent=error.message}finally{select.disabled=false}});card.append(details,select);target.append(card)}}
+async function load(){message.textContent='';try{const [bookingData,vehicleData,chauffeurData]=await Promise.all([api('/admin/bookings'),api('/admin/vehicles'),api('/admin/chauffeurs')]);login.classList.add('hidden');dashboard.classList.remove('hidden');render(bookingData.bookings);renderResources(vehicles,vehicleData.items,'vehicles');renderResources(chauffeurs,chauffeurData.items,'chauffeurs')}catch(error){message.textContent=error.message}}
+async function createResource(event,type){event.preventDefault();const form=event.currentTarget,data=Object.fromEntries(new FormData(form));try{await api('/admin/'+type,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)});form.reset();await load()}catch(error){message.textContent=error.message}}
 document.querySelector('#open').addEventListener('click',load);document.querySelector('#refresh').addEventListener('click',load);password.addEventListener('keydown',event=>{if(event.key==='Enter')load()});
+document.querySelector('#vehicle-form').addEventListener('submit',event=>createResource(event,'vehicles'));document.querySelector('#chauffeur-form').addEventListener('submit',event=>createResource(event,'chauffeurs'));
 </script></body></html>"""
 
 
@@ -212,6 +282,14 @@ def lambda_handler(event, context):
         return list_bookings(event)
     if method == "PATCH" and path.startswith("/admin/bookings/"):
         return update_booking(event, html.escape(path.rsplit("/", 1)[-1]))
+    if method in {"GET", "POST"} and path == "/admin/vehicles":
+        return availability_records(event, VEHICLES, "vehicle_id", "vehicle")
+    if method == "PATCH" and path.startswith("/admin/vehicles/"):
+        return update_availability(event, VEHICLES, "vehicle_id", html.escape(path.rsplit("/", 1)[-1]), VEHICLE_STATUSES)
+    if method in {"GET", "POST"} and path == "/admin/chauffeurs":
+        return availability_records(event, CHAUFFEURS, "chauffeur_id", "chauffeur")
+    if method == "PATCH" and path.startswith("/admin/chauffeurs/"):
+        return update_availability(event, CHAUFFEURS, "chauffeur_id", html.escape(path.rsplit("/", 1)[-1]), CHAUFFEUR_STATUSES)
     if method == "POST" and path == "/bookings":
         return create_booking(event)
     if method == "GET" and path.startswith("/bookings/"):

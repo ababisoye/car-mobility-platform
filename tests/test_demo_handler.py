@@ -14,7 +14,8 @@ class FakeTable:
         self.items = {}
 
     def put_item(self, Item, ConditionExpression=None):
-        self.items[Item["booking_id"]] = Item
+        key = next(key for key in Item if key.endswith("_id"))
+        self.items[Item[key]] = Item
         return {}
 
     def get_item(self, Key, **kwargs):
@@ -27,18 +28,24 @@ class FakeTable:
         return {"Items": list(self.items.values())}
 
     def update_item(self, Key, ExpressionAttributeValues, **kwargs):
-        item = self.items[Key["booking_id"]]
+        item = self.items[next(iter(Key.values()))]
         item["status"] = ExpressionAttributeValues[":status"]
         item["updated_at"] = ExpressionAttributeValues[":updated"]
         return {"Attributes": item}
 
 
-FAKE_TABLE = FakeTable()
+FAKE_TABLES = {
+    "test-bookings": FakeTable(),
+    "test-vehicles": FakeTable(),
+    "test-chauffeurs": FakeTable(),
+}
 fake_boto3 = types.SimpleNamespace(
-    resource=lambda service: types.SimpleNamespace(Table=lambda name: FAKE_TABLE)
+    resource=lambda service: types.SimpleNamespace(Table=lambda name: FAKE_TABLES[name])
 )
 sys.modules["boto3"] = fake_boto3
 os.environ["BOOKINGS_TABLE"] = "test-bookings"
+os.environ["VEHICLES_TABLE"] = "test-vehicles"
+os.environ["CHAUFFEURS_TABLE"] = "test-chauffeurs"
 os.environ["BOOKING_TTL_DAYS"] = "30"
 os.environ["ALLOWED_ORIGIN"] = "*"
 test_salt = b"unit-test-salt"
@@ -144,6 +151,41 @@ class DemoHandlerTests(unittest.TestCase):
         )
         self.assertEqual(updated["statusCode"], 200)
         self.assertEqual(json.loads(updated["body"])["status"], "REVIEWING")
+
+    def test_admin_can_manage_vehicle_availability(self):
+        headers = {"x-admin-password": "test-admin-password"}
+        created = handler.lambda_handler(
+            event(
+                "POST",
+                "/admin/vehicles",
+                {"name": "Mercedes GLE", "hub": "Lagos", "category": "SUV", "ownership": "Partner"},
+                headers,
+            ),
+            None,
+        )
+        self.assertEqual(created["statusCode"], 201)
+        vehicle_id = json.loads(created["body"])["vehicle_id"]
+        updated = handler.lambda_handler(
+            event("PATCH", f"/admin/vehicles/{vehicle_id}", {"status": "MAINTENANCE"}, headers),
+            None,
+        )
+        self.assertEqual(json.loads(updated["body"])["status"], "MAINTENANCE")
+
+    def test_admin_can_manage_chauffeur_availability(self):
+        headers = {"x-admin-password": "test-admin-password"}
+        created = handler.lambda_handler(
+            event("POST", "/admin/chauffeurs", {"name": "Demo Chauffeur", "hub": "Abuja"}, headers),
+            None,
+        )
+        self.assertEqual(created["statusCode"], 201)
+        chauffeur_id = json.loads(created["body"])["chauffeur_id"]
+        listed = handler.lambda_handler(event("GET", "/admin/chauffeurs", headers=headers), None)
+        self.assertEqual(json.loads(listed["body"])["count"], 1)
+        updated = handler.lambda_handler(
+            event("PATCH", f"/admin/chauffeurs/{chauffeur_id}", {"status": "OFF_DUTY"}, headers),
+            None,
+        )
+        self.assertEqual(json.loads(updated["body"])["status"], "OFF_DUTY")
 
 
 if __name__ == "__main__":

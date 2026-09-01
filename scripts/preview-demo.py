@@ -16,28 +16,35 @@ class MemoryTable:
         self.items = {}
 
     def put_item(self, Item, **_kwargs):
-        self.items[Item["booking_id"]] = Item
+        key = next(key for key in Item if key.endswith("_id"))
+        self.items[Item[key]] = Item
         return {}
 
     def get_item(self, Key, **_kwargs):
-        item = self.items.get(Key["booking_id"])
+        item = self.items.get(next(iter(Key.values())))
         return {"Item": item} if item else {}
 
     def scan(self, **_kwargs):
         return {"Items": list(self.items.values())}
 
     def update_item(self, Key, ExpressionAttributeValues, **_kwargs):
-        item = self.items[Key["booking_id"]]
+        item = self.items[next(iter(Key.values()))]
         item["status"] = ExpressionAttributeValues[":status"]
         item["updated_at"] = ExpressionAttributeValues[":updated"]
         return {"Attributes": item}
 
 
-TABLE = MemoryTable()
+TABLES = {
+    "local-bookings": MemoryTable(),
+    "local-vehicles": MemoryTable(),
+    "local-chauffeurs": MemoryTable(),
+}
 fake_boto3 = types.ModuleType("boto3")
-fake_boto3.resource = lambda _service: types.SimpleNamespace(Table=lambda _name: TABLE)
+fake_boto3.resource = lambda _service: types.SimpleNamespace(Table=lambda name: TABLES[name])
 sys.modules["boto3"] = fake_boto3
 os.environ.setdefault("BOOKINGS_TABLE", "local-bookings")
+os.environ.setdefault("VEHICLES_TABLE", "local-vehicles")
+os.environ.setdefault("CHAUFFEURS_TABLE", "local-chauffeurs")
 local_salt = b"local-preview-only"
 local_digest = hashlib.pbkdf2_hmac("sha256", b"demo-admin", local_salt, 10_000)
 os.environ.setdefault(
