@@ -101,6 +101,11 @@ test_digest = hashlib.pbkdf2_hmac("sha256", b"test-admin-password", test_salt, 1
 os.environ["ADMIN_PASSWORD_HASH"] = (
     f"10000:{base64.b64encode(test_salt).decode()}:{base64.b64encode(test_digest).decode()}"
 )
+operator_salt = b"unit-operator-salt"
+operator_digest = hashlib.pbkdf2_hmac("sha256", b"test-operator-password", operator_salt, 10_000)
+os.environ["OPERATOR_PASSWORD_HASH"] = (
+    f"10000:{base64.b64encode(operator_salt).decode()}:{base64.b64encode(operator_digest).decode()}"
+)
 
 handler_path = (
     Path(__file__).parents[1]
@@ -149,6 +154,7 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertEqual(records[0]["event"], "request_started")
         self.assertEqual(records[-1]["event"], "request_completed")
         self.assertTrue(all(record["request_id"] == "request-test-123" for record in records))
+        self.assertTrue(all(record["actor_role"] == "PUBLIC" for record in records))
         self.assertNotIn("Do Not Log This Name", captured.getvalue())
         self.assertNotIn("+2348111111111", captured.getvalue())
 
@@ -216,6 +222,23 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertEqual(page["statusCode"], 200)
         self.assertIn("Operations Dashboard", page["body"])
         self.assertEqual(denied["statusCode"], 401)
+
+    def test_operator_can_work_bookings_but_cannot_change_fleet(self):
+        operator = {"x-admin-password": "test-operator-password"}
+        session = handler.lambda_handler(event("GET", "/admin/session", headers=operator), None)
+        listed = handler.lambda_handler(event("GET", "/admin/vehicles", headers=operator), None)
+        create_vehicle = handler.lambda_handler(event("POST", "/admin/vehicles", {"name": "Forbidden Vehicle", "hub": "Lagos"}, operator), None)
+        booking = handler.lambda_handler(event("POST", "/bookings", {"name": "Operator Test", "phone": "+2348000000007", "hub": "Lagos", "trip_type": "Local", "pickup": "Ikoyi", "destination": "Lekki", "pickup_at": "2027-06-01T09:00", "end_at": "2027-06-01T12:00"}), None)
+        booking_id = json.loads(booking["body"])["booking_id"]
+        reviewed = handler.lambda_handler(event("PATCH", f"/admin/bookings/{booking_id}", {"status": "REVIEWING"}, operator), None)
+        self.assertEqual(json.loads(session["body"])["role"], "OPERATOR")
+        self.assertEqual(listed["statusCode"], 200)
+        self.assertEqual(create_vehicle["statusCode"], 403)
+        self.assertEqual(reviewed["statusCode"], 200)
+
+    def test_admin_session_has_full_role(self):
+        session = handler.lambda_handler(event("GET", "/admin/session", headers={"x-admin-password": "test-admin-password"}), None)
+        self.assertEqual(json.loads(session["body"])["role"], "ADMIN")
 
     def test_admin_can_list_and_update_booking(self):
         headers = {"x-admin-password": "test-admin-password"}

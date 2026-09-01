@@ -22,6 +22,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Promotes immutable Lambda versions through a stable alias with a manual, OIDC-based rollback workflow
 - Emits privacy-conscious JSON logs with request correlation, latency and Lambda release metadata
 - Versions every DynamoDB record and provides an account-guarded, dry-run-first migration workflow
+- Separates administrator and operator permissions with matching server-side and dashboard controls
 - Automated Python tests plus Terraform formatting and validation in CI
 - Documented a production growth path without forcing production cost on the MVP
 
@@ -127,6 +128,7 @@ docs/
   release-runbook.md      Manual promotion, rollback and emergency checks
   observability-runbook.md Structured-log queries and incident response
   data-migrations.md      DynamoDB compatibility, verification and rollback rules
+  access-control.md       Demo role matrix and managed-identity boundary
 scripts/
   generate-admin-password-hash.py  Create the demo dashboard credential hash
   preview-demo.py         Local preview with in-memory booking storage
@@ -189,11 +191,11 @@ terraform apply demo.tfplan
 terraform output -raw demo_url
 ```
 
-Paste the generated hash into `admin_password_hash` in the ignored `terraform.tfvars` file. The plaintext password is never written by the helper. After deployment, append `/admin` to the demo URL to open the operations dashboard.
+Paste the generated hash into `admin_password_hash` in the ignored `terraform.tfvars` file. Run the helper again with a distinct operator password and place that hash in `operator_password_hash`, or leave the operator value empty to disable that role. Plaintext passwords are never written by the helper. After deployment, append `/admin` to the demo URL to open the operations dashboard.
 
 Set `payment_webhook_secret` to a separate random value of at least 32 characters. A payment provider adapter must sign the exact webhook request body with HMAC-SHA256 and send the hexadecimal digest in `x-webhook-signature`; never reuse the admin password or commit a real secret.
 
-The dashboard authentication is deliberately small and cost-free: HTTPS carries the password and Lambda verifies it against a salted PBKDF2 hash. For production, replace this mechanism with Cognito or another managed identity provider, MFA, role-based access and an audit trail.
+The dashboard authentication is deliberately small and cost-free: HTTPS carries a staff password and Lambda verifies it against a salted PBKDF2 hash. Administrators control fleet records; operators can run booking, quote, payment, assignment and notification workflows but cannot change fleet availability. See the [access-control model](docs/access-control.md). For production, replace shared role credentials with individual managed identities, MFA and durable user-level audit history.
 
 Notification events are stored but not sent in zero-funding mode. A later provider adapter can deliver them by email, SMS or WhatsApp without coupling booking logic to one vendor.
 
@@ -250,9 +252,9 @@ All DynamoDB records carry an explicit schema version. The [data migration guide
 
 ## Skills demonstrated
 
-AWS serverless architecture, Terraform module design, IAM least privilege, DynamoDB data lifecycle and schema migration, Lambda packaging, structured observability, controlled rollback, cost controls, Python testing, GitHub Actions CI and environment separation.
+AWS serverless architecture, Terraform module design, IAM least privilege, application RBAC, DynamoDB data lifecycle and schema migration, Lambda packaging, structured observability, controlled rollback, cost controls, Python testing, GitHub Actions CI and environment separation.
 
 ## Roadmap
 
 - Real payment-provider and notification delivery adapters
-- Production identity with MFA, role-based access and audit history
+- Managed production identity with MFA and durable user-level audit history

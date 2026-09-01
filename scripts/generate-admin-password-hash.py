@@ -1,4 +1,4 @@
-"""Generate a salted PBKDF2 hash without storing the admin password."""
+"""Generate a salted PBKDF2 hash without storing the staff password."""
 
 import base64
 import getpass
@@ -9,7 +9,7 @@ import secrets
 ITERATIONS = 210_000
 
 
-password = getpass.getpass("Choose the demo admin password: ")
+password = getpass.getpass("Choose the demo staff password: ")
 confirmation = getpass.getpass("Confirm the password: ")
 if password != confirmation:
     raise SystemExit("Passwords do not match.")

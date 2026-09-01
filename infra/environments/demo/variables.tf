@@ -51,3 +51,15 @@ variable "payment_webhook_secret" {
     error_message = "payment_webhook_secret must contain at least 32 characters."
   }
 }
+
+variable "operator_password_hash" {
+  description = "Optional PBKDF2 password hash for the restricted operations role."
+  type        = string
+  sensitive   = true
+  default     = ""
+
+  validation {
+    condition     = var.operator_password_hash == "" || can(regex("^[0-9]+:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$", var.operator_password_hash))
+    error_message = "operator_password_hash must be empty or use the helper's iterations:salt:digest format."
+  }
+}

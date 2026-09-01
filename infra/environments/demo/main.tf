@@ -191,6 +191,7 @@ resource "aws_lambda_function" "application" {
       ALLOWED_ORIGIN         = var.allowed_origin
       BOOKING_TTL_DAYS       = "30"
       ADMIN_PASSWORD_HASH    = var.admin_password_hash
+      OPERATOR_PASSWORD_HASH = var.operator_password_hash
       PAYMENT_WEBHOOK_SECRET = var.payment_webhook_secret
     }
   }
@@ -219,7 +220,7 @@ resource "aws_lambda_function_url" "application" {
 
   cors {
     allow_credentials = false
-    allow_headers     = ["content-type", "x-admin-password"]
+    allow_headers     = ["content-type", "x-admin-password", "x-staff-password"]
     allow_methods     = ["GET", "POST", "PATCH"]
     allow_origins     = [var.allowed_origin]
     expose_headers    = ["content-type", "x-request-id"]
