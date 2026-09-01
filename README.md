@@ -1,6 +1,45 @@
-# Luxury Vehicle Rental - AWS Infrastructure
+# Car Mobility Platform
 
-This repository contains the AWS Terraform foundation for the chauffeur-driven luxury vehicle rental MVP.
+[![Terraform validation](https://github.com/ababisoye/car-mobility-platform/actions/workflows/terraform-validate.yml/badge.svg)](https://github.com/ababisoye/car-mobility-platform/actions/workflows/terraform-validate.yml)
+
+A cloud-native booking platform for chauffeur-driven luxury vehicles in Nigeria. The project demonstrates how business requirements become secure, cost-conscious AWS infrastructure using Python, Terraform, DynamoDB, Lambda and GitHub Actions.
+
+The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approved interstate journeys. Self-drive rental is intentionally excluded.
+
+## Engineering outcomes
+
+- Designed a serverless demonstration that has no always-running compute
+- Reduced the public request path to Lambda Function URL and DynamoDB
+- Implemented infrastructure as code for demo, non-production and production stages
+- Added booking validation, short-lived demo records and security headers
+- Automated Python tests plus Terraform formatting and validation in CI
+- Documented a production growth path without forcing production cost on the MVP
+
+## Architecture
+
+```mermaid
+flowchart LR
+    Customer[Mobile customer] -->|HTTPS| URL[Lambda Function URL]
+    URL --> Lambda[Python Lambda<br/>128 MB / ARM64]
+    Lambda --> Table[(DynamoDB bookings<br/>30-day TTL)]
+    Lambda --> Logs[CloudWatch Logs<br/>1-day retention]
+    Budget[AWS Budget<br/>USD 1 alerts] -. monitors .-> Lambda
+    Budget -. monitors .-> Table
+```
+
+The zero-funding path deliberately omits API Gateway, a load balancer, NAT Gateway, containers and RDS. The reusable production foundation remains available for a later, funded phase.
+
+## Booking interface
+
+![Mobile-friendly chauffeur booking form](docs/booking-demo.png)
+
+Run the interface locally without AWS credentials:
+
+```powershell
+python scripts/preview-demo.py
+```
+
+Then open `http://127.0.0.1:8080`. Local preview bookings are held in memory and disappear when the process stops.
 
 ## Zero-funding mode
 
@@ -58,6 +97,7 @@ infra/
     nonprod/              Reduced-cost integration/staging foundation
     production/           Production safety defaults
 scripts/
+  preview-demo.py         Local preview with in-memory booking storage
   terraform-check.ps1     Local formatting and validation helper
 ```
 
@@ -147,3 +187,21 @@ Run:
 ```
 
 The helper requires Terraform to be installed. GitHub Actions performs the same formatting and validation checks on pushes and pull requests.
+
+The Lambda tests can also be run independently:
+
+```powershell
+python -m unittest discover -s tests -v
+```
+
+## Skills demonstrated
+
+AWS serverless architecture, Terraform module design, IAM least privilege, DynamoDB data lifecycle, Lambda packaging, cost controls, Python testing, GitHub Actions CI and environment separation.
+
+## Roadmap
+
+- Authenticated operations dashboard
+- Vehicle and chauffeur availability
+- Versioned quotation workflow
+- Notifications and payment-provider adapters
+- Production deployment with controlled promotion and rollback
