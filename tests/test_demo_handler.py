@@ -2,11 +2,13 @@ import base64
 import hashlib
 import hmac
 import importlib.util
+import io
 import json
 import os
 import sys
 import types
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 
 
@@ -123,10 +125,38 @@ def event(method, path, body=None, headers=None):
 
 
 class DemoHandlerTests(unittest.TestCase):
+    def setUp(self):
+        self.real_log_event = handler.log_event
+        handler.log_event = lambda *_args, **_kwargs: None
+
+    def tearDown(self):
+        handler.log_event = self.real_log_event
+
     def test_home_page_loads(self):
         result = handler.lambda_handler(event("GET", "/"), None)
         self.assertEqual(result["statusCode"], 200)
         self.assertIn("Request a quote", result["body"])
+
+    def test_requests_have_structured_safe_correlation_logs(self):
+        request = event("POST", "/bookings", {"name": "Do Not Log This Name", "phone": "+2348111111111", "hub": "Lagos", "trip_type": "Local", "pickup": "Ikoyi", "destination": "Airport", "pickup_at": "2027-05-01T09:00", "end_at": "2027-05-01T12:00"})
+        request["requestContext"]["requestId"] = "request-test-123"
+        captured = io.StringIO()
+        handler.log_event = self.real_log_event
+        with redirect_stdout(captured):
+            result = handler.lambda_handler(request, None)
+        records = [json.loads(line) for line in captured.getvalue().splitlines()]
+        self.assertEqual(result["headers"]["x-request-id"], "request-test-123")
+        self.assertEqual(records[0]["event"], "request_started")
+        self.assertEqual(records[-1]["event"], "request_completed")
+        self.assertTrue(all(record["request_id"] == "request-test-123" for record in records))
+        self.assertNotIn("Do Not Log This Name", captured.getvalue())
+        self.assertNotIn("+2348111111111", captured.getvalue())
+
+    def test_health_reports_release_version(self):
+        result = handler.lambda_handler(event("GET", "/health"), None)
+        payload = json.loads(result["body"])
+        self.assertEqual(payload["service"], "luxury-rental-demo")
+        self.assertEqual(payload["release_version"], "local")
 
     def test_booking_can_be_created_and_checked(self):
         request = {

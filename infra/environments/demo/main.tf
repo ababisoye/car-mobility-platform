@@ -222,7 +222,7 @@ resource "aws_lambda_function_url" "application" {
     allow_headers     = ["content-type", "x-admin-password"]
     allow_methods     = ["GET", "POST", "PATCH"]
     allow_origins     = [var.allowed_origin]
-    expose_headers    = ["content-type"]
+    expose_headers    = ["content-type", "x-request-id"]
     max_age           = 300
   }
 }

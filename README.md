@@ -20,6 +20,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Queues booking, quote and assignment events in a provider-neutral notification outbox
 - Creates payment requests from approved quotes and verifies signed, idempotent payment webhooks
 - Promotes immutable Lambda versions through a stable alias with a manual, OIDC-based rollback workflow
+- Emits privacy-conscious JSON logs with request correlation, latency and Lambda release metadata
 - Automated Python tests plus Terraform formatting and validation in CI
 - Documented a production growth path without forcing production cost on the MVP
 
@@ -123,6 +124,7 @@ infra/
   github-release-role/    Least-privilege GitHub OIDC role for Lambda releases
 docs/
   release-runbook.md      Manual promotion, rollback and emergency checks
+  observability-runbook.md Structured-log queries and incident response
 scripts/
   generate-admin-password-hash.py  Create the demo dashboard credential hash
   preview-demo.py         Local preview with in-memory booking storage
@@ -238,6 +240,8 @@ python -m unittest discover -s tests -v
 The `Controlled demo release` workflow is manual and dormant until its protected GitHub environment and AWS OIDC role are configured. It validates and packages a selected Git revision before requesting short-lived AWS credentials, then promotes an immutable Lambda version through the `live` alias. See the [release and rollback runbook](docs/release-runbook.md).
 
 Creating or committing this workflow does not deploy infrastructure and does not create AWS charges. Running its deployment operation requires an existing demo stack and explicit GitHub environment approval.
+
+The Lambda emits structured JSON without request bodies, credentials or customer contact fields. Every response includes `x-request-id`, and `/health` identifies the active Lambda version. See the [observability and incident runbook](docs/observability-runbook.md) for safe CloudWatch queries and response steps.
 
 ## Skills demonstrated
 

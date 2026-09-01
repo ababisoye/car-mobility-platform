@@ -6,6 +6,7 @@ import json
 import os
 import time
 import uuid
+from contextvars import ContextVar
 from decimal import Decimal
 from datetime import datetime
 
@@ -29,6 +30,8 @@ ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*")
 TTL_DAYS = int(os.environ.get("BOOKING_TTL_DAYS", "30"))
 ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", "")
 PAYMENT_WEBHOOK_SECRET = os.environ.get("PAYMENT_WEBHOOK_SECRET", "")
+RELEASE_VERSION = os.environ.get("AWS_LAMBDA_FUNCTION_VERSION", "local")
+REQUEST_ID = ContextVar("request_id", default="unknown")
 HUBS = {"Lagos", "Ogun", "Oyo", "Abuja"}
 TRIP_TYPES = {"Local", "Interstate"}
 BOOKING_STATUSES = {"REQUESTED", "REVIEWING", "QUOTED", "CONFIRMED", "ASSIGNED", "IN_PROGRESS", "COMPLETED", "DECLINED", "CANCELLED"}
@@ -48,9 +51,23 @@ def response(status, body, content_type="application/json; charset=utf-8"):
             "x-frame-options": "DENY",
             "referrer-policy": "no-referrer",
             "content-security-policy": "default-src 'self' 'unsafe-inline'; connect-src 'self' https:; form-action 'self'; frame-ancestors 'none'",
+            "x-request-id": REQUEST_ID.get(),
         },
         "body": payload,
     }
+
+
+def log_event(event_name, level="INFO", **fields):
+    record = {
+        "timestamp": int(time.time()),
+        "level": level,
+        "service": "luxury-rental-demo",
+        "release_version": RELEASE_VERSION,
+        "request_id": REQUEST_ID.get(),
+        "event": event_name,
+        **fields,
+    }
+    print(json.dumps(record, separators=(",", ":"), default=str))
 
 
 def clean(value, maximum):
@@ -117,6 +134,7 @@ def create_booking(event):
     }
     TABLE.put_item(Item=item, ConditionExpression="attribute_not_exists(booking_id)")
     queue_notification(booking_id, "BOOKING_REQUESTED", "Your booking request was received and is awaiting review.")
+    log_event("booking_created", booking_id=booking_id, hub=booking["hub"], trip_type=booking["trip_type"])
     return response(201, {"booking_id": booking_id, "status": "REQUESTED", "message": "Your demo request has been recorded."})
 
 
@@ -305,6 +323,7 @@ def assign_booking(event, booking_id):
             return response(409, {"error": "Assignment changed concurrently; refresh and try again."})
         raise
     queue_notification(booking_id, "RESOURCES_ASSIGNED", "A vehicle and chauffeur have been assigned to your booking.")
+    log_event("resources_assigned", booking_id=booking_id, vehicle_id=vehicle_id, chauffeur_id=chauffeur_id)
     return response(200, {"booking_id": booking_id, "status": "ASSIGNED", "vehicle_id": vehicle_id, "chauffeur_id": chauffeur_id})
 
 
@@ -363,6 +382,7 @@ def manage_quotes(event, booking_id):
         ExpressionAttributeValues={":quoted": "QUOTED", ":quote_id": quote_id, ":version": version, ":amount": amount_ngn, ":updated": now},
     )
     queue_notification(booking_id, "QUOTE_ISSUED", f"Quote version {version} was issued for NGN {amount_ngn:,}.")
+    log_event("quote_issued", booking_id=booking_id, quote_id=quote_id, version=version)
     return response(201, quote)
 
 
@@ -409,6 +429,7 @@ def manage_payments(event, booking_id):
     PAYMENTS.put_item(Item=item, ConditionExpression="attribute_not_exists(record_id)")
     TABLE.update_item(Key={"booking_id": booking_id}, UpdateExpression="SET payment_id = :payment_id, payment_status = :payment_status, updated_at = :updated", ExpressionAttributeValues={":payment_id": payment_id, ":payment_status": "PENDING", ":updated": now})
     queue_notification(booking_id, "PAYMENT_REQUESTED", f"A payment request for NGN {int(quote['amount_ngn']):,} is ready.")
+    log_event("payment_requested", booking_id=booking_id, payment_id=payment_id)
     return response(201, item)
 
 
@@ -460,6 +481,7 @@ def payment_webhook(event):
     booking_status = "CONFIRMED" if status == "PAID" else "QUOTED"
     TABLE.update_item(Key={"booking_id": payment["booking_id"]}, UpdateExpression="SET #s = :booking_status, payment_status = :payment_status, updated_at = :updated", ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":booking_status": booking_status, ":payment_status": status, ":updated": now})
     queue_notification(payment["booking_id"], "PAYMENT_CONFIRMED" if status == "PAID" else "PAYMENT_FAILED", "Your payment was confirmed." if status == "PAID" else "Your payment attempt was not successful.")
+    log_event("payment_webhook_applied", booking_id=payment["booking_id"], payment_id=payment_id, provider_event_id=event_id, payment_status=status)
     return response(200, {"event_id": event_id, "payment_id": payment_id, "status": updated["status"], "duplicate": False})
 
 
@@ -549,7 +571,7 @@ document.querySelector('#vehicle-form').addEventListener('submit',event=>createR
 </script></body></html>"""
 
 
-def lambda_handler(event, context):
+def route_request(event):
     request = event.get("requestContext", {}).get("http", {})
     method = request.get("method", "GET")
     path = event.get("rawPath", "/")
@@ -557,7 +579,7 @@ def lambda_handler(event, context):
     if method == "GET" and path == "/":
         return response(200, page(), "text/html; charset=utf-8")
     if method == "GET" and path == "/health":
-        return response(200, {"status": "ok", "mode": "zero-funding-demo"})
+        return response(200, {"status": "ok", "mode": "zero-funding-demo", "service": "luxury-rental-demo", "release_version": RELEASE_VERSION})
     if method == "GET" and path == "/admin":
         return response(200, admin_page(), "text/html; charset=utf-8")
     if method == "GET" and path == "/admin/bookings":
@@ -593,3 +615,26 @@ def lambda_handler(event, context):
             return latest_payment(html.escape(path.split("/")[-2]))
         return booking_status(html.escape(path.rsplit("/", 1)[-1]))
     return response(404, {"error": "Not found."})
+
+
+def lambda_handler(event, context):
+    request = event.get("requestContext", {})
+    http = request.get("http", {})
+    request_id = clean(request.get("requestId") or getattr(context, "aws_request_id", "") or str(uuid.uuid4()), 100)
+    token = REQUEST_ID.set(request_id)
+    method = clean(http.get("method") or "GET", 10)
+    path = clean(event.get("rawPath") or "/", 200)
+    started = time.perf_counter()
+    log_event("request_started", method=method, path=path)
+    try:
+        result = route_request(event)
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        status_code = int(result.get("statusCode", 500))
+        log_event("request_completed", level="ERROR" if status_code >= 500 else "INFO", method=method, path=path, status_code=status_code, duration_ms=duration_ms)
+        return result
+    except Exception as error:
+        duration_ms = round((time.perf_counter() - started) * 1000, 2)
+        log_event("request_failed", level="ERROR", method=method, path=path, duration_ms=duration_ms, error_type=type(error).__name__)
+        raise
+    finally:
+        REQUEST_ID.reset(token)
