@@ -17,6 +17,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Added atomic booking assignment that reserves a vehicle and chauffeur together
 - Rejects unavailable, wrong-hub and overlapping resource assignments
 - Preserves immutable quote revisions and exposes only the latest customer quote
+- Queues booking, quote and assignment events in a provider-neutral notification outbox
 - Automated Python tests plus Terraform formatting and validation in CI
 - Documented a production growth path without forcing production cost on the MVP
 
@@ -30,12 +31,14 @@ flowchart LR
     Lambda --> Vehicles[(DynamoDB vehicles)]
     Lambda --> Chauffeurs[(DynamoDB chauffeurs)]
     Lambda --> Quotes[(DynamoDB quote versions)]
+    Lambda --> Outbox[(DynamoDB notification outbox)]
     Lambda --> Logs[CloudWatch Logs<br/>1-day retention]
     Budget[AWS Budget<br/>USD 1 alerts] -. monitors .-> Lambda
     Budget -. monitors .-> Bookings
     Budget -. monitors .-> Vehicles
     Budget -. monitors .-> Chauffeurs
     Budget -. monitors .-> Quotes
+    Budget -. monitors .-> Outbox
 ```
 
 The zero-funding path deliberately omits API Gateway, a load balancer, NAT Gateway, containers and RDS. The reusable production foundation remains available for a later, funded phase.
@@ -64,7 +67,7 @@ The recommended starting point is `infra/environments/demo`. It replaces all alw
 
 - One Python Lambda function with 128 MB memory and concurrency capped at one
 - One Lambda Function URL, with no load balancer or API Gateway
-- Four DynamoDB tables for bookings, vehicles, chauffeurs and quote versions, each using 1 provisioned read and 1 provisioned write unit
+- Five DynamoDB tables for bookings, vehicles, chauffeurs, quote versions and notifications, each using 1 provisioned read and 1 provisioned write unit
 - One-day CloudWatch log retention
 - Automatic deletion of booking requests after 30 days
 - A USD 1 actual and forecast budget notification
@@ -178,6 +181,8 @@ Paste the generated hash into `admin_password_hash` in the ignored `terraform.tf
 
 The dashboard authentication is deliberately small and cost-free: HTTPS carries the password and Lambda verifies it against a salted PBKDF2 hash. For production, replace this mechanism with Cognito or another managed identity provider, MFA, role-based access and an audit trail.
 
+Notification events are stored but not sent in zero-funding mode. A later provider adapter can deliver them by email, SMS or WhatsApp without coupling booking logic to one vendor.
+
 Destroy the demo when it is no longer needed:
 
 ```powershell
@@ -223,5 +228,5 @@ AWS serverless architecture, Terraform module design, IAM least privilege, Dynam
 
 ## Roadmap
 
-- Notifications and payment-provider adapters
+- Payment-provider adapter with signed, idempotent webhooks
 - Production deployment with controlled promotion and rollback

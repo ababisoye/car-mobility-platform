@@ -16,10 +16,12 @@ BOOKINGS_TABLE_NAME = os.environ["BOOKINGS_TABLE"]
 VEHICLES_TABLE_NAME = os.environ["VEHICLES_TABLE"]
 CHAUFFEURS_TABLE_NAME = os.environ["CHAUFFEURS_TABLE"]
 QUOTES_TABLE_NAME = os.environ["QUOTES_TABLE"]
+NOTIFICATIONS_TABLE_NAME = os.environ["NOTIFICATIONS_TABLE"]
 TABLE = boto3.resource("dynamodb").Table(BOOKINGS_TABLE_NAME)
 VEHICLES = boto3.resource("dynamodb").Table(VEHICLES_TABLE_NAME)
 CHAUFFEURS = boto3.resource("dynamodb").Table(CHAUFFEURS_TABLE_NAME)
 QUOTES = boto3.resource("dynamodb").Table(QUOTES_TABLE_NAME)
+NOTIFICATIONS = boto3.resource("dynamodb").Table(NOTIFICATIONS_TABLE_NAME)
 DYNAMO_CLIENT = boto3.client("dynamodb")
 ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*")
 TTL_DAYS = int(os.environ.get("BOOKING_TTL_DAYS", "30"))
@@ -50,6 +52,23 @@ def response(status, body, content_type="application/json; charset=utf-8"):
 
 def clean(value, maximum):
     return str(value or "").strip()[:maximum]
+
+
+def queue_notification(booking_id, event_type, message, audience="CUSTOMER"):
+    now = int(time.time())
+    item = {
+        "notification_id": str(uuid.uuid4()),
+        "booking_id": booking_id,
+        "event_type": event_type,
+        "audience": audience,
+        "channel": "PENDING_PROVIDER",
+        "message": clean(message, 300),
+        "status": "PENDING",
+        "created_at": now,
+        "expires_at": now + (30 * 86400),
+    }
+    NOTIFICATIONS.put_item(Item=item, ConditionExpression="attribute_not_exists(notification_id)")
+    return item
 
 
 def create_booking(event):
@@ -94,6 +113,7 @@ def create_booking(event):
         **booking,
     }
     TABLE.put_item(Item=item, ConditionExpression="attribute_not_exists(booking_id)")
+    queue_notification(booking_id, "BOOKING_REQUESTED", "Your booking request was received and is awaiting review.")
     return response(201, {"booking_id": booking_id, "status": "REQUESTED", "message": "Your demo request has been recorded."})
 
 
@@ -281,6 +301,7 @@ def assign_booking(event, booking_id):
         if error_response.get("Error", {}).get("Code") == "TransactionCanceledException":
             return response(409, {"error": "Assignment changed concurrently; refresh and try again."})
         raise
+    queue_notification(booking_id, "RESOURCES_ASSIGNED", "A vehicle and chauffeur have been assigned to your booking.")
     return response(200, {"booking_id": booking_id, "status": "ASSIGNED", "vehicle_id": vehicle_id, "chauffeur_id": chauffeur_id})
 
 
@@ -338,6 +359,7 @@ def manage_quotes(event, booking_id):
         ExpressionAttributeNames={"#s": "status"},
         ExpressionAttributeValues={":quoted": "QUOTED", ":quote_id": quote_id, ":version": version, ":amount": amount_ngn, ":updated": now},
     )
+    queue_notification(booking_id, "QUOTE_ISSUED", f"Quote version {version} was issued for NGN {amount_ngn:,}.")
     return response(201, quote)
 
 
@@ -347,6 +369,39 @@ def latest_quote(booking_id):
         return response(404, {"error": "No quote has been issued for this booking."})
     quote = quotes[0]
     return response(200, {key: quote[key] for key in ("booking_id", "version", "amount_ngn", "valid_until", "notes", "status")})
+
+
+def notification_outbox(event, notification_id=None):
+    denied = require_admin(event)
+    if denied:
+        return denied
+    method = event.get("requestContext", {}).get("http", {}).get("method")
+    if method == "GET":
+        items = NOTIFICATIONS.scan(Limit=100).get("Items", [])
+        items.sort(key=lambda item: item.get("created_at", 0), reverse=True)
+        return response(200, {"notifications": items, "count": len(items)})
+    try:
+        data = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return response(400, {"error": "Request body must be valid JSON."})
+    status = clean(data.get("status"), 20).upper()
+    if status not in {"PROCESSED", "DISMISSED"}:
+        return response(400, {"error": "Notification status must be PROCESSED or DISMISSED."})
+    try:
+        result = NOTIFICATIONS.update_item(
+            Key={"notification_id": notification_id},
+            UpdateExpression="SET #s = :status, updated_at = :updated",
+            ConditionExpression="attribute_exists(notification_id)",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":status": status, ":updated": int(time.time())},
+            ReturnValues="ALL_NEW",
+        )
+    except Exception as error:
+        error_response = getattr(error, "response", {})
+        if error_response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return response(404, {"error": "Notification not found."})
+        raise
+    return response(200, result["Attributes"])
 
 
 def page():
@@ -378,14 +433,15 @@ def admin_page():
     return """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Operations Dashboard</title><style>
-:root{color-scheme:dark;--gold:#d8b36a;--panel:#191b1f;--muted:#aeb4be}*{box-sizing:border-box}body{margin:0;background:#0d0e10;color:#f7f7f5;font:15px/1.5 system-ui,sans-serif}.wrap{max-width:1180px;margin:auto;padding:34px 18px 60px}h1{font:700 clamp(2rem,5vw,3.4rem)/1.05 Georgia,serif;margin:.3rem 0}h2{font:700 1.6rem Georgia,serif}.eyebrow{color:var(--gold);letter-spacing:.16em;text-transform:uppercase}.muted{color:var(--muted)}.login,.card,.panel,.resource{background:var(--panel);border:1px solid #30343a;border-radius:12px;padding:18px}.login{max-width:520px;margin:28px 0}.row{display:flex;gap:10px;align-items:end}label{display:block;color:#ddd;font-size:.9rem;margin-bottom:5px;flex:1}input,select{width:100%;background:#111317;color:white;border:1px solid #3a3e45;border-radius:8px;padding:11px;font:inherit}button{background:var(--gold);border:0;border-radius:8px;color:#111;font-weight:800;padding:12px 17px;cursor:pointer}.toolbar{display:flex;justify-content:space-between;align-items:center;margin:28px 0 14px}.cards,.resource-list{display:grid;gap:12px}.card{display:grid;grid-template-columns:1.1fr 1fr 1fr .8fr;gap:18px}.card input,.card select,.card button{margin-top:7px}.inventory{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:38px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}.form-grid button{align-self:end}.resource{display:grid;grid-template-columns:1fr .8fr;gap:12px;align-items:center}.name{font-weight:800}.ref{font:12px monospace;color:#858c97;overflow-wrap:anywhere}.error{color:#ff9c9c}.hidden{display:none}@media(max-width:780px){.card,.inventory{grid-template-columns:1fr}.row{align-items:stretch;flex-direction:column}.form-grid{grid-template-columns:1fr}}
+:root{color-scheme:dark;--gold:#d8b36a;--panel:#191b1f;--muted:#aeb4be}*{box-sizing:border-box}body{margin:0;background:#0d0e10;color:#f7f7f5;font:15px/1.5 system-ui,sans-serif}.wrap{max-width:1180px;margin:auto;padding:34px 18px 60px}h1{font:700 clamp(2rem,5vw,3.4rem)/1.05 Georgia,serif;margin:.3rem 0}h2{font:700 1.6rem Georgia,serif}.eyebrow{color:var(--gold);letter-spacing:.16em;text-transform:uppercase}.muted{color:var(--muted)}.login,.card,.panel,.resource,.notification{background:var(--panel);border:1px solid #30343a;border-radius:12px;padding:18px}.login{max-width:520px;margin:28px 0}.row{display:flex;gap:10px;align-items:end}label{display:block;color:#ddd;font-size:.9rem;margin-bottom:5px;flex:1}input,select{width:100%;background:#111317;color:white;border:1px solid #3a3e45;border-radius:8px;padding:11px;font:inherit}button{background:var(--gold);border:0;border-radius:8px;color:#111;font-weight:800;padding:12px 17px;cursor:pointer}.toolbar{display:flex;justify-content:space-between;align-items:center;margin:28px 0 14px}.cards,.resource-list,.notification-list{display:grid;gap:12px}.card{display:grid;grid-template-columns:1.1fr 1fr 1fr .8fr;gap:18px}.card input,.card select,.card button{margin-top:7px}.inventory{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:38px}.outbox{margin-top:18px}.form-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:16px}.form-grid button{align-self:end}.resource,.notification{display:grid;grid-template-columns:1fr .8fr;gap:12px;align-items:center}.name{font-weight:800}.ref{font:12px monospace;color:#858c97;overflow-wrap:anywhere}.error{color:#ff9c9c}.hidden{display:none}@media(max-width:780px){.card,.inventory,.notification{grid-template-columns:1fr}.row{align-items:stretch;flex-direction:column}.form-grid{grid-template-columns:1fr}}
 </style></head><body><main class="wrap"><div class="eyebrow">Demo operations</div><h1>Booking requests</h1><p class="muted">Review recent requests and update their workflow status.</p>
 <section id="login" class="login"><div class="row"><label>Admin password<input id="password" type="password" autocomplete="current-password"></label><button id="open">Open dashboard</button></div><p id="message" class="error" role="alert"></p></section>
 <section id="dashboard" class="hidden"><div class="toolbar"><strong id="count">Requests</strong><button id="refresh">Refresh all</button></div><div id="cards" class="cards"></div>
 <div class="inventory"><section class="panel"><h2>Vehicles</h2><form id="vehicle-form" class="form-grid"><label>Vehicle name<input name="name" required placeholder="Mercedes GLE"></label><label>Hub<select name="hub" required><option>Lagos</option><option>Ogun</option><option>Oyo</option><option>Abuja</option></select></label><label>Category<input name="category" placeholder="Executive SUV"></label><label>Ownership<select name="ownership"><option>Company</option><option>Partner</option></select></label><button type="submit">Add vehicle</button></form><div id="vehicles" class="resource-list"></div></section>
-<section class="panel"><h2>Chauffeurs</h2><form id="chauffeur-form" class="form-grid"><label>Chauffeur name<input name="name" required></label><label>Hub<select name="hub" required><option>Lagos</option><option>Ogun</option><option>Oyo</option><option>Abuja</option></select></label><button type="submit">Add chauffeur</button></form><div id="chauffeurs" class="resource-list"></div></section></div></section></main>
+<section class="panel"><h2>Chauffeurs</h2><form id="chauffeur-form" class="form-grid"><label>Chauffeur name<input name="name" required></label><label>Hub<select name="hub" required><option>Lagos</option><option>Ogun</option><option>Oyo</option><option>Abuja</option></select></label><button type="submit">Add chauffeur</button></form><div id="chauffeurs" class="resource-list"></div></section></div>
+<section class="panel outbox"><h2>Notification outbox</h2><p class="muted">Delivery-ready events are stored here without contacting a paid provider.</p><div id="notifications" class="notification-list"></div></section></section></main>
 <script>
-const login=document.querySelector('#login'),dashboard=document.querySelector('#dashboard'),cards=document.querySelector('#cards'),message=document.querySelector('#message'),password=document.querySelector('#password'),count=document.querySelector('#count'),vehicles=document.querySelector('#vehicles'),chauffeurs=document.querySelector('#chauffeurs');
+const login=document.querySelector('#login'),dashboard=document.querySelector('#dashboard'),cards=document.querySelector('#cards'),message=document.querySelector('#message'),password=document.querySelector('#password'),count=document.querySelector('#count'),vehicles=document.querySelector('#vehicles'),chauffeurs=document.querySelector('#chauffeurs'),notifications=document.querySelector('#notifications');
 const statuses=['REQUESTED','REVIEWING','QUOTED','CONFIRMED','ASSIGNED','IN_PROGRESS','COMPLETED','DECLINED','CANCELLED'];
 const vehicleStatuses=['AVAILABLE','RESERVED','ON_TRIP','MAINTENANCE','INACTIVE'],chauffeurStatuses=['AVAILABLE','ASSIGNED','OFF_DUTY','INACTIVE'];
 function field(parent,text,cls=''){const node=document.createElement('div');node.textContent=text||'—';if(cls)node.className=cls;parent.append(node)}
@@ -393,7 +449,8 @@ async function api(path,options={}){options.headers={...(options.headers||{}),'x
 function choice(items,idField,label){const select=document.createElement('select'),placeholder=document.createElement('option');placeholder.value='';placeholder.textContent=label;select.append(placeholder);for(const item of items){const option=document.createElement('option');option.value=item[idField];option.textContent=item.name;select.append(option)}return select}
 function render(items,vehicleItems,chauffeurItems){cards.replaceChildren();count.textContent=items.length+' request'+(items.length===1?'':'s');for(const item of items){const card=document.createElement('article');card.className='card';const who=document.createElement('div');field(who,item.name,'name');field(who,item.phone);field(who,item.email);field(who,item.booking_id,'ref');const trip=document.createElement('div');field(trip,item.trip_type+' · '+item.hub,'name');field(trip,item.pickup+' → '+item.destination);field(trip,item.pickup_at+' → '+item.end_at);const vehicle=document.createElement('div');field(vehicle,item.vehicle_preference||'No vehicle preference','name');field(vehicle,item.notes||'No notes','muted');if(item.quote_version)field(vehicle,'Latest quote v'+item.quote_version+' · NGN '+Number(item.quote_amount_ngn).toLocaleString(),'name');const quoteAmount=document.createElement('input'),quoteExpiry=document.createElement('input'),quoteNotes=document.createElement('input'),issueQuote=document.createElement('button');quoteAmount.type='number';quoteAmount.min='1';quoteAmount.placeholder='Amount in NGN';quoteAmount.setAttribute('aria-label','Quote amount in NGN');quoteExpiry.type='datetime-local';quoteExpiry.setAttribute('aria-label','Quote expiry');quoteNotes.placeholder='Quote notes';quoteNotes.setAttribute('aria-label','Quote notes');issueQuote.textContent=item.quote_version?'Issue revision':'Issue quote';issueQuote.addEventListener('click',async()=>{if(!quoteAmount.value||!quoteExpiry.value){message.textContent='Enter a quote amount and expiry.';return}issueQuote.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id)+'/quotes',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({amount_ngn:Number(quoteAmount.value),valid_until:quoteExpiry.value,notes:quoteNotes.value})});await load()}catch(error){message.textContent=error.message}finally{issueQuote.disabled=false}});vehicle.append(quoteAmount,quoteExpiry,quoteNotes,issueQuote);const control=document.createElement('div'),select=document.createElement('select');for(const status of statuses){const option=document.createElement('option');option.value=option.textContent=status;option.selected=status===item.status;select.append(option)}select.addEventListener('change',async()=>{select.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:select.value})})}catch(error){message.textContent=error.message}finally{select.disabled=false}});control.append(select);if(!item.vehicle_id&&!item.chauffeur_id){const availableVehicles=vehicleItems.filter(resource=>resource.hub===item.hub&&resource.status==='AVAILABLE'),availableChauffeurs=chauffeurItems.filter(resource=>resource.hub===item.hub&&resource.status==='AVAILABLE'),vehicleChoice=choice(availableVehicles,'vehicle_id','Select vehicle'),chauffeurChoice=choice(availableChauffeurs,'chauffeur_id','Select chauffeur'),assign=document.createElement('button');assign.textContent='Assign';assign.addEventListener('click',async()=>{if(!vehicleChoice.value||!chauffeurChoice.value){message.textContent='Select both a vehicle and chauffeur.';return}assign.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id)+'/assignment',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({vehicle_id:vehicleChoice.value,chauffeur_id:chauffeurChoice.value})});await load()}catch(error){message.textContent=error.message}finally{assign.disabled=false}});control.append(vehicleChoice,chauffeurChoice,assign)}else{field(control,'Resources assigned','name')}card.append(who,trip,vehicle,control);cards.append(card)}}
 function renderResources(target,items,type){target.replaceChildren();const idField=type==='vehicles'?'vehicle_id':'chauffeur_id',options=type==='vehicles'?vehicleStatuses:chauffeurStatuses;for(const item of items){const card=document.createElement('article');card.className='resource';const details=document.createElement('div');field(details,item.name,'name');field(details,item.hub+(item.category?' · '+item.category:'')+(item.ownership?' · '+item.ownership:''));const select=document.createElement('select');for(const status of options){const option=document.createElement('option');option.value=option.textContent=status;option.selected=status===item.status;select.append(option)}select.addEventListener('change',async()=>{select.disabled=true;try{await api('/admin/'+type+'/'+encodeURIComponent(item[idField]),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:select.value})})}catch(error){message.textContent=error.message}finally{select.disabled=false}});card.append(details,select);target.append(card)}}
-async function load(){message.textContent='';try{const [bookingData,vehicleData,chauffeurData]=await Promise.all([api('/admin/bookings'),api('/admin/vehicles'),api('/admin/chauffeurs')]);login.classList.add('hidden');dashboard.classList.remove('hidden');render(bookingData.bookings,vehicleData.items,chauffeurData.items);renderResources(vehicles,vehicleData.items,'vehicles');renderResources(chauffeurs,chauffeurData.items,'chauffeurs')}catch(error){message.textContent=error.message}}
+function renderNotifications(items){notifications.replaceChildren();for(const item of items){const card=document.createElement('article');card.className='notification';const details=document.createElement('div');field(details,item.event_type.replaceAll('_',' '),'name');field(details,item.message);field(details,'Booking '+item.booking_id,'ref');const action=document.createElement('button');action.textContent=item.status==='PENDING'?'Mark processed':item.status;action.disabled=item.status!=='PENDING';action.addEventListener('click',async()=>{action.disabled=true;try{await api('/admin/notifications/'+encodeURIComponent(item.notification_id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:'PROCESSED'})});await load()}catch(error){message.textContent=error.message}});card.append(details,action);notifications.append(card)}}
+async function load(){message.textContent='';try{const [bookingData,vehicleData,chauffeurData,notificationData]=await Promise.all([api('/admin/bookings'),api('/admin/vehicles'),api('/admin/chauffeurs'),api('/admin/notifications')]);login.classList.add('hidden');dashboard.classList.remove('hidden');render(bookingData.bookings,vehicleData.items,chauffeurData.items);renderResources(vehicles,vehicleData.items,'vehicles');renderResources(chauffeurs,chauffeurData.items,'chauffeurs');renderNotifications(notificationData.notifications)}catch(error){message.textContent=error.message}}
 async function createResource(event,type){event.preventDefault();const form=event.currentTarget,data=Object.fromEntries(new FormData(form));try{await api('/admin/'+type,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)});form.reset();await load()}catch(error){message.textContent=error.message}}
 document.querySelector('#open').addEventListener('click',load);document.querySelector('#refresh').addEventListener('click',load);password.addEventListener('keydown',event=>{if(event.key==='Enter')load()});
 document.querySelector('#vehicle-form').addEventListener('submit',event=>createResource(event,'vehicles'));document.querySelector('#chauffeur-form').addEventListener('submit',event=>createResource(event,'chauffeurs'));
@@ -427,6 +484,10 @@ def lambda_handler(event, context):
         return availability_records(event, CHAUFFEURS, "chauffeur_id", "chauffeur")
     if method == "PATCH" and path.startswith("/admin/chauffeurs/"):
         return update_availability(event, CHAUFFEURS, "chauffeur_id", html.escape(path.rsplit("/", 1)[-1]), CHAUFFEUR_STATUSES)
+    if method == "GET" and path == "/admin/notifications":
+        return notification_outbox(event)
+    if method == "PATCH" and path.startswith("/admin/notifications/"):
+        return notification_outbox(event, html.escape(path.rsplit("/", 1)[-1]))
     if method == "POST" and path == "/bookings":
         return create_booking(event)
     if method == "GET" and path.startswith("/bookings/"):

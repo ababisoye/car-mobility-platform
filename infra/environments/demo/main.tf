@@ -70,6 +70,24 @@ resource "aws_dynamodb_table" "quotes" {
   }
 }
 
+resource "aws_dynamodb_table" "notifications" {
+  name           = "${local.name}-notifications"
+  billing_mode   = "PROVISIONED"
+  read_capacity  = 1
+  write_capacity = 1
+  hash_key       = "notification_id"
+
+  attribute {
+    name = "notification_id"
+    type = "S"
+  }
+
+  ttl {
+    attribute_name = "expires_at"
+    enabled        = true
+  }
+}
+
 resource "aws_iam_role" "lambda" {
   name = "${local.name}-lambda"
 
@@ -106,7 +124,8 @@ resource "aws_iam_role_policy" "lambda" {
           aws_dynamodb_table.bookings.arn,
           aws_dynamodb_table.vehicles.arn,
           aws_dynamodb_table.chauffeurs.arn,
-          aws_dynamodb_table.quotes.arn
+          aws_dynamodb_table.quotes.arn,
+          aws_dynamodb_table.notifications.arn
         ]
       },
       {
@@ -148,6 +167,7 @@ resource "aws_lambda_function" "application" {
       VEHICLES_TABLE      = aws_dynamodb_table.vehicles.name
       CHAUFFEURS_TABLE    = aws_dynamodb_table.chauffeurs.name
       QUOTES_TABLE        = aws_dynamodb_table.quotes.name
+      NOTIFICATIONS_TABLE = aws_dynamodb_table.notifications.name
       ALLOWED_ORIGIN      = var.allowed_origin
       BOOKING_TTL_DAYS    = "30"
       ADMIN_PASSWORD_HASH = var.admin_password_hash

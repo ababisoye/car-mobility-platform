@@ -47,6 +47,7 @@ TABLES = {
     "local-vehicles": MemoryTable(),
     "local-chauffeurs": MemoryTable(),
     "local-quotes": MemoryTable(),
+    "local-notifications": MemoryTable(),
 }
 
 
@@ -79,6 +80,7 @@ os.environ.setdefault("BOOKINGS_TABLE", "local-bookings")
 os.environ.setdefault("VEHICLES_TABLE", "local-vehicles")
 os.environ.setdefault("CHAUFFEURS_TABLE", "local-chauffeurs")
 os.environ.setdefault("QUOTES_TABLE", "local-quotes")
+os.environ.setdefault("NOTIFICATIONS_TABLE", "local-notifications")
 local_salt = b"local-preview-only"
 local_digest = hashlib.pbkdf2_hmac("sha256", b"demo-admin", local_salt, 10_000)
 os.environ.setdefault(

@@ -47,6 +47,7 @@ FAKE_TABLES = {
     "test-vehicles": FakeTable(),
     "test-chauffeurs": FakeTable(),
     "test-quotes": FakeTable(),
+    "test-notifications": FakeTable(),
 }
 
 
@@ -80,6 +81,7 @@ os.environ["BOOKINGS_TABLE"] = "test-bookings"
 os.environ["VEHICLES_TABLE"] = "test-vehicles"
 os.environ["CHAUFFEURS_TABLE"] = "test-chauffeurs"
 os.environ["QUOTES_TABLE"] = "test-quotes"
+os.environ["NOTIFICATIONS_TABLE"] = "test-notifications"
 os.environ["BOOKING_TTL_DAYS"] = "30"
 os.environ["ALLOWED_ORIGIN"] = "*"
 test_salt = b"unit-test-salt"
@@ -151,6 +153,21 @@ class DemoHandlerTests(unittest.TestCase):
         }
         result = handler.lambda_handler(event("POST", "/bookings", request), None)
         self.assertEqual(result["statusCode"], 400)
+
+    def test_notification_outbox_can_be_processed(self):
+        headers = {"x-admin-password": "test-admin-password"}
+        booking = handler.lambda_handler(
+            event("POST", "/bookings", {"name": "Notification Test", "phone": "+2348000000005", "hub": "Ogun", "trip_type": "Local", "pickup": "Ibara", "destination": "Kuto", "pickup_at": "2027-02-01T09:00", "end_at": "2027-02-01T12:00"}),
+            None,
+        )
+        self.assertEqual(booking["statusCode"], 201)
+        outbox = handler.lambda_handler(event("GET", "/admin/notifications", headers=headers), None)
+        pending = next(item for item in json.loads(outbox["body"])["notifications"] if item["event_type"] == "BOOKING_REQUESTED")
+        processed = handler.lambda_handler(
+            event("PATCH", f"/admin/notifications/{pending['notification_id']}", {"status": "PROCESSED"}, headers),
+            None,
+        )
+        self.assertEqual(json.loads(processed["body"])["status"], "PROCESSED")
 
     def test_admin_dashboard_requires_password(self):
         page = handler.lambda_handler(event("GET", "/admin"), None)

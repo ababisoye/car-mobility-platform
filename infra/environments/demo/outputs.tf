@@ -23,6 +23,11 @@ output "quotes_table" {
   value       = aws_dynamodb_table.quotes.name
 }
 
+output "notifications_table" {
+  description = "DynamoDB outbox for pending demo notifications."
+  value       = aws_dynamodb_table.notifications.name
+}
+
 output "monthly_budget_usd" {
   description = "Notification threshold; AWS Budgets alerts do not automatically stop usage."
   value       = 1
