@@ -175,6 +175,7 @@ class DemoHandlerTests(unittest.TestCase):
         created = handler.lambda_handler(event("POST", "/bookings", request), None)
         self.assertEqual(created["statusCode"], 201)
         booking_id = json.loads(created["body"])["booking_id"]
+        self.assertEqual(FAKE_TABLES["test-bookings"].items[booking_id]["schema_version"], 1)
 
         status = handler.lambda_handler(event("GET", f"/bookings/{booking_id}"), None)
         self.assertEqual(status["statusCode"], 200)

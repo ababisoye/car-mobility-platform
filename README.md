@@ -21,6 +21,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Creates payment requests from approved quotes and verifies signed, idempotent payment webhooks
 - Promotes immutable Lambda versions through a stable alias with a manual, OIDC-based rollback workflow
 - Emits privacy-conscious JSON logs with request correlation, latency and Lambda release metadata
+- Versions every DynamoDB record and provides an account-guarded, dry-run-first migration workflow
 - Automated Python tests plus Terraform formatting and validation in CI
 - Documented a production growth path without forcing production cost on the MVP
 
@@ -125,10 +126,12 @@ infra/
 docs/
   release-runbook.md      Manual promotion, rollback and emergency checks
   observability-runbook.md Structured-log queries and incident response
+  data-migrations.md      DynamoDB compatibility, verification and rollback rules
 scripts/
   generate-admin-password-hash.py  Create the demo dashboard credential hash
   preview-demo.py         Local preview with in-memory booking storage
   terraform-check.ps1     Local formatting and validation helper
+  migrate-demo-schema.py  Conditional, idempotent schema-version migration
 ```
 
 ## 1. Bootstrap remote state
@@ -243,11 +246,13 @@ Creating or committing this workflow does not deploy infrastructure and does not
 
 The Lambda emits structured JSON without request bodies, credentials or customer contact fields. Every response includes `x-request-id`, and `/health` identifies the active Lambda version. See the [observability and incident runbook](docs/observability-runbook.md) for safe CloudWatch queries and response steps.
 
+All DynamoDB records carry an explicit schema version. The [data migration guide](docs/data-migrations.md) defines additive compatibility, dry-run review, account verification, conditional writes and rollback expectations. The migration helper is never invoked automatically by CI or deployment.
+
 ## Skills demonstrated
 
-AWS serverless architecture, Terraform module design, IAM least privilege, DynamoDB data lifecycle, Lambda packaging, cost controls, Python testing, GitHub Actions CI and environment separation.
+AWS serverless architecture, Terraform module design, IAM least privilege, DynamoDB data lifecycle and schema migration, Lambda packaging, structured observability, controlled rollback, cost controls, Python testing, GitHub Actions CI and environment separation.
 
 ## Roadmap
 
 - Real payment-provider and notification delivery adapters
-- Production-grade identity, observability and data migration controls
+- Production identity with MFA, role-based access and audit history

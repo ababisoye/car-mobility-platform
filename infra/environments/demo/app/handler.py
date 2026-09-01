@@ -31,6 +31,7 @@ TTL_DAYS = int(os.environ.get("BOOKING_TTL_DAYS", "30"))
 ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", "")
 PAYMENT_WEBHOOK_SECRET = os.environ.get("PAYMENT_WEBHOOK_SECRET", "")
 RELEASE_VERSION = os.environ.get("AWS_LAMBDA_FUNCTION_VERSION", "local")
+SCHEMA_VERSION = 1
 REQUEST_ID = ContextVar("request_id", default="unknown")
 HUBS = {"Lagos", "Ogun", "Oyo", "Abuja"}
 TRIP_TYPES = {"Local", "Interstate"}
@@ -77,6 +78,7 @@ def clean(value, maximum):
 def queue_notification(booking_id, event_type, message, audience="CUSTOMER"):
     now = int(time.time())
     item = {
+        "schema_version": SCHEMA_VERSION,
         "notification_id": str(uuid.uuid4()),
         "booking_id": booking_id,
         "event_type": event_type,
@@ -126,6 +128,7 @@ def create_booking(event):
     now = int(time.time())
     booking_id = str(uuid.uuid4())
     item = {
+        "schema_version": SCHEMA_VERSION,
         "booking_id": booking_id,
         "status": "REQUESTED",
         "created_at": now,
@@ -235,6 +238,7 @@ def availability_records(event, table, id_field, record_type):
         return response(400, {"error": "Provide a name and valid fleet hub."})
     now = int(time.time())
     item = {
+        "schema_version": SCHEMA_VERSION,
         id_field: str(uuid.uuid4()),
         "name": name,
         "hub": hub,
@@ -358,6 +362,7 @@ def manage_quotes(event, booking_id):
     quote_id = f"{booking_id}#{version}"
     now = int(time.time())
     quote = {
+        "schema_version": SCHEMA_VERSION,
         "quote_id": quote_id,
         "booking_id": booking_id,
         "version": version,
@@ -421,7 +426,7 @@ def manage_payments(event, booking_id):
     now = int(time.time())
     payment_id = str(uuid.uuid4())
     item = {
-        "record_id": f"PAYMENT#{payment_id}", "record_type": "PAYMENT", "payment_id": payment_id,
+        "schema_version": SCHEMA_VERSION, "record_id": f"PAYMENT#{payment_id}", "record_type": "PAYMENT", "payment_id": payment_id,
         "booking_id": booking_id, "quote_id": quote["quote_id"], "amount_ngn": quote["amount_ngn"],
         "currency": "NGN", "provider": "PENDING_ADAPTER", "status": "PENDING", "created_at": now,
         "expires_at": now + (30 * 86400),
@@ -472,7 +477,7 @@ def payment_webhook(event):
     now = int(time.time())
     updated = PAYMENTS.update_item(Key={"record_id": payment_key}, UpdateExpression="SET #s = :status, updated_at = :updated", ConditionExpression="attribute_exists(record_id)", ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":status": status, ":updated": now}, ReturnValues="ALL_NEW")["Attributes"]
     try:
-        PAYMENTS.put_item(Item={"record_id": event_key, "record_type": "WEBHOOK_EVENT", "event_id": event_id, "payment_id": payment_id, "status": status, "created_at": now, "expires_at": now + (30 * 86400)}, ConditionExpression="attribute_not_exists(record_id)")
+        PAYMENTS.put_item(Item={"schema_version": SCHEMA_VERSION, "record_id": event_key, "record_type": "WEBHOOK_EVENT", "event_id": event_id, "payment_id": payment_id, "status": status, "created_at": now, "expires_at": now + (30 * 86400)}, ConditionExpression="attribute_not_exists(record_id)")
     except Exception as error:
         error_response = getattr(error, "response", {})
         if error_response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
