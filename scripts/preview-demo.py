@@ -39,8 +39,32 @@ TABLES = {
     "local-vehicles": MemoryTable(),
     "local-chauffeurs": MemoryTable(),
 }
+
+
+class MemoryDynamoClient:
+    def transact_write_items(self, TransactItems):
+        for transaction in TransactItems:
+            update = transaction["Update"]
+            table = TABLES[update["TableName"]]
+            key = next(iter(update["Key"].values()))["S"]
+            item = table.items[key]
+            values = update["ExpressionAttributeValues"]
+            if update["TableName"] == "local-bookings":
+                item.update(
+                    status="ASSIGNED",
+                    vehicle_id=values[":vehicle"]["S"],
+                    chauffeur_id=values[":chauffeur"]["S"],
+                    updated_at=int(values[":updated"]["N"]),
+                )
+            else:
+                item["status"] = values.get(":reserved", values.get(":assigned"))["S"]
+                item["updated_at"] = int(values[":updated"]["N"])
+        return {}
+
+
 fake_boto3 = types.ModuleType("boto3")
 fake_boto3.resource = lambda _service: types.SimpleNamespace(Table=lambda name: TABLES[name])
+fake_boto3.client = lambda _service: MemoryDynamoClient()
 sys.modules["boto3"] = fake_boto3
 os.environ.setdefault("BOOKINGS_TABLE", "local-bookings")
 os.environ.setdefault("VEHICLES_TABLE", "local-vehicles")

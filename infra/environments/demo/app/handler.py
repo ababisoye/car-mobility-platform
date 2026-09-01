@@ -7,19 +7,24 @@ import os
 import time
 import uuid
 from decimal import Decimal
+from datetime import datetime
 
 import boto3
 
 
-TABLE = boto3.resource("dynamodb").Table(os.environ["BOOKINGS_TABLE"])
-VEHICLES = boto3.resource("dynamodb").Table(os.environ["VEHICLES_TABLE"])
-CHAUFFEURS = boto3.resource("dynamodb").Table(os.environ["CHAUFFEURS_TABLE"])
+BOOKINGS_TABLE_NAME = os.environ["BOOKINGS_TABLE"]
+VEHICLES_TABLE_NAME = os.environ["VEHICLES_TABLE"]
+CHAUFFEURS_TABLE_NAME = os.environ["CHAUFFEURS_TABLE"]
+TABLE = boto3.resource("dynamodb").Table(BOOKINGS_TABLE_NAME)
+VEHICLES = boto3.resource("dynamodb").Table(VEHICLES_TABLE_NAME)
+CHAUFFEURS = boto3.resource("dynamodb").Table(CHAUFFEURS_TABLE_NAME)
+DYNAMO_CLIENT = boto3.client("dynamodb")
 ALLOWED_ORIGIN = os.environ.get("ALLOWED_ORIGIN", "*")
 TTL_DAYS = int(os.environ.get("BOOKING_TTL_DAYS", "30"))
 ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH", "")
 HUBS = {"Lagos", "Ogun", "Oyo", "Abuja"}
 TRIP_TYPES = {"Local", "Interstate"}
-BOOKING_STATUSES = {"REQUESTED", "REVIEWING", "QUOTED", "CONFIRMED", "DECLINED", "CANCELLED"}
+BOOKING_STATUSES = {"REQUESTED", "REVIEWING", "QUOTED", "CONFIRMED", "ASSIGNED", "IN_PROGRESS", "COMPLETED", "DECLINED", "CANCELLED"}
 VEHICLE_STATUSES = {"AVAILABLE", "RESERVED", "ON_TRIP", "MAINTENANCE", "INACTIVE"}
 CHAUFFEUR_STATUSES = {"AVAILABLE", "ASSIGNED", "OFF_DUTY", "INACTIVE"}
 
@@ -60,16 +65,22 @@ def create_booking(event):
         "pickup": clean(data.get("pickup"), 200),
         "destination": clean(data.get("destination"), 200),
         "pickup_at": clean(data.get("pickup_at"), 40),
+        "end_at": clean(data.get("end_at"), 40),
         "vehicle_preference": clean(data.get("vehicle_preference"), 100),
         "notes": clean(data.get("notes"), 500),
     }
 
-    required = ["name", "phone", "hub", "trip_type", "pickup", "destination", "pickup_at"]
+    required = ["name", "phone", "hub", "trip_type", "pickup", "destination", "pickup_at", "end_at"]
     missing = [field for field in required if not booking[field]]
     if missing:
         return response(400, {"error": "Complete all required fields.", "fields": missing})
     if booking["hub"] not in HUBS or booking["trip_type"] not in TRIP_TYPES:
         return response(400, {"error": "Select a valid hub and trip type."})
+    try:
+        if datetime.fromisoformat(booking["end_at"]) <= datetime.fromisoformat(booking["pickup_at"]):
+            return response(400, {"error": "Expected end time must be after pickup time."})
+    except ValueError:
+        return response(400, {"error": "Provide valid pickup and expected end times."})
 
     now = int(time.time())
     booking_id = str(uuid.uuid4())
@@ -141,6 +152,11 @@ def update_booking(event, booking_id):
     status = clean(data.get("status"), 20).upper()
     if status not in BOOKING_STATUSES:
         return response(400, {"error": "Select a valid booking status."})
+    current = TABLE.get_item(Key={"booking_id": booking_id}).get("Item")
+    if not current:
+        return response(404, {"error": "Booking request not found."})
+    if status in {"ASSIGNED", "IN_PROGRESS", "COMPLETED"} and not all(current.get(field) for field in ("vehicle_id", "chauffeur_id")):
+        return response(409, {"error": "Assign a vehicle and chauffeur before selecting this status."})
     try:
         result = TABLE.update_item(
             Key={"booking_id": booking_id},
@@ -218,6 +234,54 @@ def update_availability(event, table, id_field, record_id, statuses):
     return response(200, result["Attributes"])
 
 
+def intervals_overlap(first, second):
+    return first["pickup_at"] < second["end_at"] and second["pickup_at"] < first["end_at"]
+
+
+def assign_booking(event, booking_id):
+    denied = require_admin(event)
+    if denied:
+        return denied
+    try:
+        data = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return response(400, {"error": "Request body must be valid JSON."})
+    vehicle_id = clean(data.get("vehicle_id"), 50)
+    chauffeur_id = clean(data.get("chauffeur_id"), 50)
+    if not vehicle_id or not chauffeur_id:
+        return response(400, {"error": "Select both a vehicle and chauffeur."})
+    booking = TABLE.get_item(Key={"booking_id": booking_id}).get("Item")
+    vehicle = VEHICLES.get_item(Key={"vehicle_id": vehicle_id}).get("Item")
+    chauffeur = CHAUFFEURS.get_item(Key={"chauffeur_id": chauffeur_id}).get("Item")
+    if not booking or not vehicle or not chauffeur:
+        return response(404, {"error": "Booking, vehicle or chauffeur was not found."})
+    if vehicle.get("hub") != booking.get("hub") or chauffeur.get("hub") != booking.get("hub"):
+        return response(409, {"error": "Vehicle and chauffeur must belong to the booking hub."})
+    if vehicle.get("status") != "AVAILABLE" or chauffeur.get("status") != "AVAILABLE":
+        return response(409, {"error": "Selected vehicle or chauffeur is no longer available."})
+    for existing in TABLE.scan(Limit=100).get("Items", []):
+        if existing.get("booking_id") == booking_id or existing.get("status") in {"DECLINED", "CANCELLED", "COMPLETED"}:
+            continue
+        same_resource = existing.get("vehicle_id") == vehicle_id or existing.get("chauffeur_id") == chauffeur_id
+        if same_resource and all(existing.get(field) for field in ("pickup_at", "end_at")) and intervals_overlap(booking, existing):
+            return response(409, {"error": "Vehicle or chauffeur has an overlapping assignment."})
+    now = str(int(time.time()))
+    try:
+        DYNAMO_CLIENT.transact_write_items(
+            TransactItems=[
+                {"Update": {"TableName": BOOKINGS_TABLE_NAME, "Key": {"booking_id": {"S": booking_id}}, "UpdateExpression": "SET #s = :assigned, vehicle_id = :vehicle, chauffeur_id = :chauffeur, updated_at = :updated", "ConditionExpression": "attribute_exists(booking_id) AND #s <> :assigned", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":assigned": {"S": "ASSIGNED"}, ":vehicle": {"S": vehicle_id}, ":chauffeur": {"S": chauffeur_id}, ":updated": {"N": now}}}},
+                {"Update": {"TableName": VEHICLES_TABLE_NAME, "Key": {"vehicle_id": {"S": vehicle_id}}, "UpdateExpression": "SET #s = :reserved, updated_at = :updated", "ConditionExpression": "#s = :available", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":reserved": {"S": "RESERVED"}, ":available": {"S": "AVAILABLE"}, ":updated": {"N": now}}}},
+                {"Update": {"TableName": CHAUFFEURS_TABLE_NAME, "Key": {"chauffeur_id": {"S": chauffeur_id}}, "UpdateExpression": "SET #s = :assigned, updated_at = :updated", "ConditionExpression": "#s = :available", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":assigned": {"S": "ASSIGNED"}, ":available": {"S": "AVAILABLE"}, ":updated": {"N": now}}}},
+            ]
+        )
+    except Exception as error:
+        error_response = getattr(error, "response", {})
+        if error_response.get("Error", {}).get("Code") == "TransactionCanceledException":
+            return response(409, {"error": "Assignment changed concurrently; refresh and try again."})
+        raise
+    return response(200, {"booking_id": booking_id, "status": "ASSIGNED", "vehicle_id": vehicle_id, "chauffeur_id": chauffeur_id})
+
+
 def page():
     return """<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -233,6 +297,7 @@ def page():
 <div><label for="hub">Fleet hub *</label><select id="hub" name="hub" required><option value="">Choose</option><option>Lagos</option><option>Ogun</option><option>Oyo</option><option>Abuja</option></select></div>
 <div><label for="trip_type">Trip type *</label><select id="trip_type" name="trip_type" required><option>Local</option><option>Interstate</option></select></div>
 <div><label for="pickup_at">Pickup date and time *</label><input id="pickup_at" name="pickup_at" type="datetime-local" required></div>
+<div><label for="end_at">Expected end date and time *</label><input id="end_at" name="end_at" type="datetime-local" required></div>
 <div><label for="pickup">Pickup location *</label><input id="pickup" name="pickup" maxlength="200" required></div>
 <div><label for="destination">Destination *</label><input id="destination" name="destination" maxlength="200" required></div>
 <div class="full"><label for="vehicle_preference">Vehicle preference</label><input id="vehicle_preference" name="vehicle_preference" maxlength="100" placeholder="Example: executive SUV"></div>
@@ -254,13 +319,14 @@ def admin_page():
 <section class="panel"><h2>Chauffeurs</h2><form id="chauffeur-form" class="form-grid"><label>Chauffeur name<input name="name" required></label><label>Hub<select name="hub" required><option>Lagos</option><option>Ogun</option><option>Oyo</option><option>Abuja</option></select></label><button type="submit">Add chauffeur</button></form><div id="chauffeurs" class="resource-list"></div></section></div></section></main>
 <script>
 const login=document.querySelector('#login'),dashboard=document.querySelector('#dashboard'),cards=document.querySelector('#cards'),message=document.querySelector('#message'),password=document.querySelector('#password'),count=document.querySelector('#count'),vehicles=document.querySelector('#vehicles'),chauffeurs=document.querySelector('#chauffeurs');
-const statuses=['REQUESTED','REVIEWING','QUOTED','CONFIRMED','DECLINED','CANCELLED'];
+const statuses=['REQUESTED','REVIEWING','QUOTED','CONFIRMED','ASSIGNED','IN_PROGRESS','COMPLETED','DECLINED','CANCELLED'];
 const vehicleStatuses=['AVAILABLE','RESERVED','ON_TRIP','MAINTENANCE','INACTIVE'],chauffeurStatuses=['AVAILABLE','ASSIGNED','OFF_DUTY','INACTIVE'];
 function field(parent,text,cls=''){const node=document.createElement('div');node.textContent=text||'—';if(cls)node.className=cls;parent.append(node)}
 async function api(path,options={}){options.headers={...(options.headers||{}),'x-admin-password':password.value};const response=await fetch(path,options),data=await response.json();if(!response.ok)throw Error(data.error||'Request failed');return data}
-function render(items){cards.replaceChildren();count.textContent=items.length+' request'+(items.length===1?'':'s');for(const item of items){const card=document.createElement('article');card.className='card';const who=document.createElement('div');field(who,item.name,'name');field(who,item.phone);field(who,item.email);field(who,item.booking_id,'ref');const trip=document.createElement('div');field(trip,item.trip_type+' · '+item.hub,'name');field(trip,item.pickup+' → '+item.destination);field(trip,item.pickup_at);const vehicle=document.createElement('div');field(vehicle,item.vehicle_preference||'No vehicle preference','name');field(vehicle,item.notes||'No notes','muted');const control=document.createElement('div'),select=document.createElement('select');for(const status of statuses){const option=document.createElement('option');option.value=option.textContent=status;option.selected=status===item.status;select.append(option)}select.addEventListener('change',async()=>{select.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:select.value})})}catch(error){message.textContent=error.message}finally{select.disabled=false}});control.append(select);card.append(who,trip,vehicle,control);cards.append(card)}}
+function choice(items,idField,label){const select=document.createElement('select'),placeholder=document.createElement('option');placeholder.value='';placeholder.textContent=label;select.append(placeholder);for(const item of items){const option=document.createElement('option');option.value=item[idField];option.textContent=item.name;select.append(option)}return select}
+function render(items,vehicleItems,chauffeurItems){cards.replaceChildren();count.textContent=items.length+' request'+(items.length===1?'':'s');for(const item of items){const card=document.createElement('article');card.className='card';const who=document.createElement('div');field(who,item.name,'name');field(who,item.phone);field(who,item.email);field(who,item.booking_id,'ref');const trip=document.createElement('div');field(trip,item.trip_type+' · '+item.hub,'name');field(trip,item.pickup+' → '+item.destination);field(trip,item.pickup_at+' → '+item.end_at);const vehicle=document.createElement('div');field(vehicle,item.vehicle_preference||'No vehicle preference','name');field(vehicle,item.notes||'No notes','muted');const control=document.createElement('div'),select=document.createElement('select');for(const status of statuses){const option=document.createElement('option');option.value=option.textContent=status;option.selected=status===item.status;select.append(option)}select.addEventListener('change',async()=>{select.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:select.value})})}catch(error){message.textContent=error.message}finally{select.disabled=false}});control.append(select);if(!item.vehicle_id&&!item.chauffeur_id){const availableVehicles=vehicleItems.filter(resource=>resource.hub===item.hub&&resource.status==='AVAILABLE'),availableChauffeurs=chauffeurItems.filter(resource=>resource.hub===item.hub&&resource.status==='AVAILABLE'),vehicleChoice=choice(availableVehicles,'vehicle_id','Select vehicle'),chauffeurChoice=choice(availableChauffeurs,'chauffeur_id','Select chauffeur'),assign=document.createElement('button');assign.textContent='Assign';assign.addEventListener('click',async()=>{if(!vehicleChoice.value||!chauffeurChoice.value){message.textContent='Select both a vehicle and chauffeur.';return}assign.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id)+'/assignment',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({vehicle_id:vehicleChoice.value,chauffeur_id:chauffeurChoice.value})});await load()}catch(error){message.textContent=error.message}finally{assign.disabled=false}});control.append(vehicleChoice,chauffeurChoice,assign)}else{field(control,'Resources assigned','name')}card.append(who,trip,vehicle,control);cards.append(card)}}
 function renderResources(target,items,type){target.replaceChildren();const idField=type==='vehicles'?'vehicle_id':'chauffeur_id',options=type==='vehicles'?vehicleStatuses:chauffeurStatuses;for(const item of items){const card=document.createElement('article');card.className='resource';const details=document.createElement('div');field(details,item.name,'name');field(details,item.hub+(item.category?' · '+item.category:'')+(item.ownership?' · '+item.ownership:''));const select=document.createElement('select');for(const status of options){const option=document.createElement('option');option.value=option.textContent=status;option.selected=status===item.status;select.append(option)}select.addEventListener('change',async()=>{select.disabled=true;try{await api('/admin/'+type+'/'+encodeURIComponent(item[idField]),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:select.value})})}catch(error){message.textContent=error.message}finally{select.disabled=false}});card.append(details,select);target.append(card)}}
-async function load(){message.textContent='';try{const [bookingData,vehicleData,chauffeurData]=await Promise.all([api('/admin/bookings'),api('/admin/vehicles'),api('/admin/chauffeurs')]);login.classList.add('hidden');dashboard.classList.remove('hidden');render(bookingData.bookings);renderResources(vehicles,vehicleData.items,'vehicles');renderResources(chauffeurs,chauffeurData.items,'chauffeurs')}catch(error){message.textContent=error.message}}
+async function load(){message.textContent='';try{const [bookingData,vehicleData,chauffeurData]=await Promise.all([api('/admin/bookings'),api('/admin/vehicles'),api('/admin/chauffeurs')]);login.classList.add('hidden');dashboard.classList.remove('hidden');render(bookingData.bookings,vehicleData.items,chauffeurData.items);renderResources(vehicles,vehicleData.items,'vehicles');renderResources(chauffeurs,chauffeurData.items,'chauffeurs')}catch(error){message.textContent=error.message}}
 async function createResource(event,type){event.preventDefault();const form=event.currentTarget,data=Object.fromEntries(new FormData(form));try{await api('/admin/'+type,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)});form.reset();await load()}catch(error){message.textContent=error.message}}
 document.querySelector('#open').addEventListener('click',load);document.querySelector('#refresh').addEventListener('click',load);password.addEventListener('keydown',event=>{if(event.key==='Enter')load()});
 document.querySelector('#vehicle-form').addEventListener('submit',event=>createResource(event,'vehicles'));document.querySelector('#chauffeur-form').addEventListener('submit',event=>createResource(event,'chauffeurs'));
@@ -280,6 +346,8 @@ def lambda_handler(event, context):
         return response(200, admin_page(), "text/html; charset=utf-8")
     if method == "GET" and path == "/admin/bookings":
         return list_bookings(event)
+    if method == "PATCH" and path.startswith("/admin/bookings/") and path.endswith("/assignment"):
+        return assign_booking(event, html.escape(path.split("/")[-2]))
     if method == "PATCH" and path.startswith("/admin/bookings/"):
         return update_booking(event, html.escape(path.rsplit("/", 1)[-1]))
     if method in {"GET", "POST"} and path == "/admin/vehicles":

@@ -19,10 +19,10 @@ class FakeTable:
         return {}
 
     def get_item(self, Key, **kwargs):
-        item = self.items.get(Key["booking_id"])
+        item = self.items.get(next(iter(Key.values())))
         if not item:
             return {}
-        return {"Item": {key: item[key] for key in ("booking_id", "status", "created_at")}}
+        return {"Item": item}
 
     def scan(self, **kwargs):
         return {"Items": list(self.items.values())}
@@ -39,8 +39,32 @@ FAKE_TABLES = {
     "test-vehicles": FakeTable(),
     "test-chauffeurs": FakeTable(),
 }
+
+
+class FakeDynamoClient:
+    def transact_write_items(self, TransactItems):
+        for transaction in TransactItems:
+            update = transaction["Update"]
+            table = FAKE_TABLES[update["TableName"]]
+            key = next(iter(update["Key"].values()))["S"]
+            item = table.items[key]
+            values = update["ExpressionAttributeValues"]
+            if update["TableName"] == "test-bookings":
+                item.update(
+                    status="ASSIGNED",
+                    vehicle_id=values[":vehicle"]["S"],
+                    chauffeur_id=values[":chauffeur"]["S"],
+                    updated_at=int(values[":updated"]["N"]),
+                )
+            else:
+                item["status"] = values.get(":reserved", values.get(":assigned"))["S"]
+                item["updated_at"] = int(values[":updated"]["N"])
+        return {}
+
+
 fake_boto3 = types.SimpleNamespace(
-    resource=lambda service: types.SimpleNamespace(Table=lambda name: FAKE_TABLES[name])
+    resource=lambda service: types.SimpleNamespace(Table=lambda name: FAKE_TABLES[name]),
+    client=lambda service: FakeDynamoClient(),
 )
 sys.modules["boto3"] = fake_boto3
 os.environ["BOOKINGS_TABLE"] = "test-bookings"
@@ -92,6 +116,7 @@ class DemoHandlerTests(unittest.TestCase):
             "pickup": "Victoria Island",
             "destination": "Ibadan",
             "pickup_at": "2026-09-10T09:00",
+            "end_at": "2026-09-10T18:00",
             "vehicle_preference": "Executive SUV",
             "notes": "Demo only",
         }
@@ -112,6 +137,7 @@ class DemoHandlerTests(unittest.TestCase):
             "pickup": "A",
             "destination": "B",
             "pickup_at": "2026-09-10T09:00",
+            "end_at": "2026-09-10T18:00",
         }
         result = handler.lambda_handler(event("POST", "/bookings", request), None)
         self.assertEqual(result["statusCode"], 400)
@@ -137,6 +163,7 @@ class DemoHandlerTests(unittest.TestCase):
                     "pickup": "Wuse",
                     "destination": "Maitama",
                     "pickup_at": "2026-09-12T10:00",
+                    "end_at": "2026-09-12T14:00",
                 },
             ),
             None,
@@ -151,6 +178,40 @@ class DemoHandlerTests(unittest.TestCase):
         )
         self.assertEqual(updated["statusCode"], 200)
         self.assertEqual(json.loads(updated["body"])["status"], "REVIEWING")
+
+    def test_admin_can_atomically_assign_resources(self):
+        headers = {"x-admin-password": "test-admin-password"}
+        booking = handler.lambda_handler(
+            event("POST", "/bookings", {"name": "Assignment Test", "phone": "+2348000000002", "hub": "Oyo", "trip_type": "Local", "pickup": "Bodija", "destination": "Ring Road", "pickup_at": "2026-10-01T09:00", "end_at": "2026-10-01T12:00"}),
+            None,
+        )
+        vehicle = handler.lambda_handler(event("POST", "/admin/vehicles", {"name": "Lexus RX", "hub": "Oyo"}, headers), None)
+        chauffeur = handler.lambda_handler(event("POST", "/admin/chauffeurs", {"name": "Assignment Chauffeur", "hub": "Oyo"}, headers), None)
+        assigned = handler.lambda_handler(
+            event(
+                "PATCH",
+                f"/admin/bookings/{json.loads(booking['body'])['booking_id']}/assignment",
+                {"vehicle_id": json.loads(vehicle["body"])["vehicle_id"], "chauffeur_id": json.loads(chauffeur["body"])["chauffeur_id"]},
+                headers,
+            ),
+            None,
+        )
+        self.assertEqual(assigned["statusCode"], 200)
+        self.assertEqual(json.loads(assigned["body"])["status"], "ASSIGNED")
+        overlapping = handler.lambda_handler(
+            event("POST", "/bookings", {"name": "Conflict Test", "phone": "+2348000000003", "hub": "Oyo", "trip_type": "Local", "pickup": "Dugbe", "destination": "Bodija", "pickup_at": "2026-10-01T10:00", "end_at": "2026-10-01T13:00"}),
+            None,
+        )
+        rejected = handler.lambda_handler(
+            event(
+                "PATCH",
+                f"/admin/bookings/{json.loads(overlapping['body'])['booking_id']}/assignment",
+                {"vehicle_id": json.loads(vehicle["body"])["vehicle_id"], "chauffeur_id": json.loads(chauffeur["body"])["chauffeur_id"]},
+                headers,
+            ),
+            None,
+        )
+        self.assertEqual(rejected["statusCode"], 409)
 
     def test_admin_can_manage_vehicle_availability(self):
         headers = {"x-admin-password": "test-admin-password"}
@@ -180,7 +241,7 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertEqual(created["statusCode"], 201)
         chauffeur_id = json.loads(created["body"])["chauffeur_id"]
         listed = handler.lambda_handler(event("GET", "/admin/chauffeurs", headers=headers), None)
-        self.assertEqual(json.loads(listed["body"])["count"], 1)
+        self.assertIn(chauffeur_id, {item["chauffeur_id"] for item in json.loads(listed["body"])["items"]})
         updated = handler.lambda_handler(
             event("PATCH", f"/admin/chauffeurs/{chauffeur_id}", {"status": "OFF_DUTY"}, headers),
             None,

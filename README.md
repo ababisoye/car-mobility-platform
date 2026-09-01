@@ -14,6 +14,8 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Added booking validation, short-lived demo records and security headers
 - Added a password-protected operations view for booking review and status updates
 - Added vehicle and chauffeur availability management across all four hubs
+- Added atomic booking assignment that reserves a vehicle and chauffeur together
+- Rejects unavailable, wrong-hub and overlapping resource assignments
 - Automated Python tests plus Terraform formatting and validation in CI
 - Documented a production growth path without forcing production cost on the MVP
 
@@ -34,6 +36,8 @@ flowchart LR
 ```
 
 The zero-funding path deliberately omits API Gateway, a load balancer, NAT Gateway, containers and RDS. The reusable production foundation remains available for a later, funded phase.
+
+Assignment uses a DynamoDB transaction to change the booking, vehicle and chauffeur together. A concurrent request fails instead of partially assigning or double-reserving a resource.
 
 ## Booking interface
 
@@ -216,7 +220,6 @@ AWS serverless architecture, Terraform module design, IAM least privilege, Dynam
 
 ## Roadmap
 
-- Booking-to-vehicle and chauffeur assignment with conflict checks
 - Versioned quotation workflow
 - Notifications and payment-provider adapters
 - Production deployment with controlled promotion and rollback
