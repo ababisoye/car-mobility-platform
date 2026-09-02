@@ -14,11 +14,10 @@ Thank you for helping improve the chauffeur-driven mobility platform.
 From the repository root, run:
 
 ```powershell
-python -m unittest discover -s tests -v
-terraform fmt -check -recursive infra
+./scripts/terraform-check.ps1
 ```
 
-If Terraform is available and the relevant directory has been initialized, also run `terraform validate`. A pull request must leave GitHub Actions green.
+The helper runs the Python suite, Terraform formatting, demo package build and offline-backend validation for every Terraform root. It never plans or applies infrastructure. A pull request must leave GitHub Actions green.
 
 ## Pull requests
 

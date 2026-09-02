@@ -286,7 +286,7 @@ Run:
 ./scripts/terraform-check.ps1
 ```
 
-The helper requires Terraform to be installed. GitHub Actions performs the same formatting and validation checks on pushes and pull requests.
+The helper requires Python 3.13 and Terraform 1.15.9. It runs the Python suite, checks formatting, builds the ignored demo package and validates all five Terraform roots with remote backends disabled. It never plans, applies or contacts AWS APIs. GitHub Actions performs the same checks on pushes and pull requests.
 
 The Lambda tests can also be run independently:
 
