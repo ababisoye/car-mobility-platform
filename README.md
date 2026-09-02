@@ -17,6 +17,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Added atomic booking assignment that reserves a vehicle and chauffeur together
 - Rejects unavailable, wrong-hub and overlapping resource assignments
 - Atomically releases assigned fleet resources when trips complete or bookings terminate
+- Enforces an explicit booking state machine and exposes only valid dashboard transitions
 - Preserves immutable quote revisions and exposes only the latest customer quote
 - Lets token-authenticated customers accept or decline only the latest unexpired quote
 - Queues booking, quote and assignment events in a provider-neutral notification outbox
@@ -212,6 +213,8 @@ Payment requests are also provider-neutral. A customer must first accept the lat
 Customer status, quote and payment endpoints require `x-booking-token`. Only a SHA-256 hash is stored, invalid credentials receive the same response as unknown bookings, and staff APIs never return the hash. See [customer booking access](docs/customer-access.md).
 
 Unpaid customers can cancel online before a trip starts. Cancellation and staff completion release an assigned vehicle and chauffeur in the same DynamoDB transaction as the booking update, making those resources safely available for another trip. Paid cancellations require operations review because refunds are provider-dependent. See [booking lifecycle](docs/booking-lifecycle.md).
+
+Server-side lifecycle rules prevent skipped stages: confirmation requires an accepted quote or confirmed payment, assignment requires confirmation, and completion requires an in-progress assigned trip. The dashboard receives and displays only valid next states. See the [booking state machine](docs/booking-state-machine.md).
 
 Destroy the demo when it is no longer needed:
 

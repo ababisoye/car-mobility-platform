@@ -42,6 +42,17 @@ ACTOR_ROLE = ContextVar("actor_role", default="PUBLIC")
 HUBS = {"Lagos", "Ogun", "Oyo", "Abuja"}
 TRIP_TYPES = {"Local", "Interstate"}
 BOOKING_STATUSES = {"REQUESTED", "REVIEWING", "QUOTED", "CONFIRMED", "ASSIGNED", "IN_PROGRESS", "COMPLETED", "DECLINED", "CANCELLED"}
+BOOKING_TRANSITIONS = {
+    "REQUESTED": {"REVIEWING", "DECLINED", "CANCELLED"},
+    "REVIEWING": {"QUOTED", "DECLINED", "CANCELLED"},
+    "QUOTED": {"REVIEWING", "CONFIRMED", "DECLINED", "CANCELLED"},
+    "CONFIRMED": {"ASSIGNED", "CANCELLED"},
+    "ASSIGNED": {"IN_PROGRESS", "CANCELLED"},
+    "IN_PROGRESS": {"COMPLETED"},
+    "COMPLETED": set(),
+    "DECLINED": set(),
+    "CANCELLED": set(),
+}
 VEHICLE_STATUSES = {"AVAILABLE", "RESERVED", "ON_TRIP", "MAINTENANCE", "INACTIVE"}
 CHAUFFEUR_STATUSES = {"AVAILABLE", "ASSIGNED", "OFF_DUTY", "INACTIVE"}
 
@@ -247,6 +258,8 @@ def list_bookings(event):
         return denied
     result = TABLE.scan(Limit=50)
     items = [{key: value for key, value in item.items() if key != "customer_token_hash"} for item in result.get("Items", [])]
+    for item in items:
+        item["allowed_transitions"] = sorted(BOOKING_TRANSITIONS.get(item.get("status"), set()))
     items.sort(key=lambda item: item.get("created_at", 0), reverse=True)
     return response(200, {"bookings": items, "count": len(items), "limited": "Last 50 scanned records"})
 
@@ -306,8 +319,8 @@ def cancel_booking(event, booking_id):
         return response(400, {"error": "Action must be CANCEL."})
     if booking.get("status") in {"IN_PROGRESS", "COMPLETED", "CANCELLED", "DECLINED"}:
         return response(409, {"error": "This booking can no longer be cancelled online."})
-    if booking.get("payment_status") == "PAID":
-        return response(409, {"error": "Contact operations to cancel a paid booking and arrange any refund."})
+    if booking.get("payment_status") in {"PENDING", "PAID"}:
+        return response(409, {"error": "Contact operations to resolve the payment before cancelling this booking."})
     updated = change_booking_status(booking, "CANCELLED")
     if not updated:
         return response(409, {"error": "The booking changed while cancellation was submitted; refresh and try again."})
@@ -328,7 +341,14 @@ def update_booking(event, booking_id):
     current = TABLE.get_item(Key={"booking_id": booking_id}).get("Item")
     if not current:
         return response(404, {"error": "Booking request not found."})
-    if status in {"ASSIGNED", "IN_PROGRESS", "COMPLETED"} and not all(current.get(field) for field in ("vehicle_id", "chauffeur_id")):
+    allowed = BOOKING_TRANSITIONS.get(current.get("status"), set())
+    if status not in allowed:
+        return response(409, {"error": f"Cannot move a booking from {current.get('status')} to {status}."})
+    if status == "CONFIRMED" and current.get("quote_status") != "ACCEPTED" and current.get("payment_status") != "PAID":
+        return response(409, {"error": "An accepted quote or confirmed payment is required before confirmation."})
+    if status == "CANCELLED" and current.get("payment_status") in {"PENDING", "PAID"}:
+        return response(409, {"error": "Resolve the payment before cancelling this booking."})
+    if status in {"IN_PROGRESS", "COMPLETED"} and not all(current.get(field) for field in ("vehicle_id", "chauffeur_id")):
         return response(409, {"error": "Assign a vehicle and chauffeur before selecting this status."})
     updated = change_booking_status(current, status)
     if not updated:
@@ -419,8 +439,8 @@ def assign_booking(event, booking_id):
     chauffeur = CHAUFFEURS.get_item(Key={"chauffeur_id": chauffeur_id}).get("Item")
     if not booking or not vehicle or not chauffeur:
         return response(404, {"error": "Booking, vehicle or chauffeur was not found."})
-    if booking.get("status") in {"DECLINED", "CANCELLED", "COMPLETED"}:
-        return response(409, {"error": "A terminal booking cannot receive an assignment."})
+    if booking.get("status") != "CONFIRMED":
+        return response(409, {"error": "Only a confirmed booking can receive an assignment."})
     if vehicle.get("hub") != booking.get("hub") or chauffeur.get("hub") != booking.get("hub"):
         return response(409, {"error": "Vehicle and chauffeur must belong to the booking hub."})
     if vehicle.get("status") != "AVAILABLE" or chauffeur.get("status") != "AVAILABLE":
@@ -435,7 +455,7 @@ def assign_booking(event, booking_id):
     try:
         DYNAMO_CLIENT.transact_write_items(
             TransactItems=[
-                {"Update": {"TableName": BOOKINGS_TABLE_NAME, "Key": {"booking_id": {"S": booking_id}}, "UpdateExpression": "SET #s = :assigned, vehicle_id = :vehicle, chauffeur_id = :chauffeur, updated_at = :updated", "ConditionExpression": "attribute_exists(booking_id) AND #s <> :assigned AND #s <> :cancelled AND #s <> :declined AND #s <> :completed", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":assigned": {"S": "ASSIGNED"}, ":cancelled": {"S": "CANCELLED"}, ":declined": {"S": "DECLINED"}, ":completed": {"S": "COMPLETED"}, ":vehicle": {"S": vehicle_id}, ":chauffeur": {"S": chauffeur_id}, ":updated": {"N": now}}}},
+                {"Update": {"TableName": BOOKINGS_TABLE_NAME, "Key": {"booking_id": {"S": booking_id}}, "UpdateExpression": "SET #s = :assigned, vehicle_id = :vehicle, chauffeur_id = :chauffeur, updated_at = :updated", "ConditionExpression": "attribute_exists(booking_id) AND #s = :confirmed", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":assigned": {"S": "ASSIGNED"}, ":confirmed": {"S": "CONFIRMED"}, ":vehicle": {"S": vehicle_id}, ":chauffeur": {"S": chauffeur_id}, ":updated": {"N": now}}}},
                 {"Update": {"TableName": VEHICLES_TABLE_NAME, "Key": {"vehicle_id": {"S": vehicle_id}}, "UpdateExpression": "SET #s = :reserved, updated_at = :updated", "ConditionExpression": "#s = :available", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":reserved": {"S": "RESERVED"}, ":available": {"S": "AVAILABLE"}, ":updated": {"N": now}}}},
                 {"Update": {"TableName": CHAUFFEURS_TABLE_NAME, "Key": {"chauffeur_id": {"S": chauffeur_id}}, "UpdateExpression": "SET #s = :assigned, updated_at = :updated", "ConditionExpression": "#s = :available", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":assigned": {"S": "ASSIGNED"}, ":available": {"S": "AVAILABLE"}, ":updated": {"N": now}}}},
             ]
@@ -466,8 +486,8 @@ def manage_quotes(event, booking_id):
     quotes = booking_quotes(booking_id)
     if method == "GET":
         return response(200, {"quotes": quotes, "count": len(quotes)})
-    if booking.get("status") in {"DECLINED", "CANCELLED", "COMPLETED"}:
-        return response(409, {"error": "A terminal booking cannot receive a new quote."})
+    if booking.get("status") not in {"REQUESTED", "REVIEWING", "QUOTED"}:
+        return response(409, {"error": "The booking is not in a quotable state."})
     try:
         data = json.loads(event.get("body") or "{}")
         amount_ngn = int(data.get("amount_ngn"))
@@ -529,8 +549,8 @@ def decide_quote(event, booking_id):
     booking = TABLE.get_item(Key={"booking_id": booking_id}).get("Item")
     if not booking_access_allowed(event, booking):
         return response(404, {"error": "Booking request not found."})
-    if booking.get("status") in {"DECLINED", "CANCELLED", "COMPLETED"}:
-        return response(409, {"error": "A terminal booking cannot receive a quote decision."})
+    if booking.get("status") != "QUOTED":
+        return response(409, {"error": "The booking is not awaiting a quote decision."})
     try:
         data = json.loads(event.get("body") or "{}")
     except json.JSONDecodeError:
@@ -588,8 +608,8 @@ def manage_payments(event, booking_id):
     payments = booking_payments(booking_id)
     if method == "GET":
         return response(200, {"payments": payments, "count": len(payments)})
-    if booking.get("status") in {"DECLINED", "CANCELLED", "COMPLETED"}:
-        return response(409, {"error": "A terminal booking cannot receive a payment request."})
+    if booking.get("status") != "QUOTED":
+        return response(409, {"error": "Only a quoted booking can receive a payment request."})
     quotes = booking_quotes(booking_id)
     if not quotes:
         return response(409, {"error": "Issue a quote before creating a payment request."})
@@ -744,12 +764,11 @@ def admin_page():
 <section class="panel outbox"><h2>Notification outbox</h2><p class="muted">Delivery-ready events are stored here without contacting a paid provider.</p><div id="notifications" class="notification-list"></div></section></section></main>
 <script>
 const login=document.querySelector('#login'),dashboard=document.querySelector('#dashboard'),cards=document.querySelector('#cards'),message=document.querySelector('#message'),password=document.querySelector('#password'),count=document.querySelector('#count'),vehicles=document.querySelector('#vehicles'),chauffeurs=document.querySelector('#chauffeurs'),notifications=document.querySelector('#notifications'),roleLabel=document.querySelector('#role');let currentRole='';
-const statuses=['REQUESTED','REVIEWING','QUOTED','CONFIRMED','ASSIGNED','IN_PROGRESS','COMPLETED','DECLINED','CANCELLED'];
 const vehicleStatuses=['AVAILABLE','RESERVED','ON_TRIP','MAINTENANCE','INACTIVE'],chauffeurStatuses=['AVAILABLE','ASSIGNED','OFF_DUTY','INACTIVE'];
 function field(parent,text,cls=''){const node=document.createElement('div');node.textContent=text||'—';if(cls)node.className=cls;parent.append(node)}
 async function api(path,options={}){options.headers={...(options.headers||{}),'x-staff-password':password.value};const response=await fetch(path,options),data=await response.json();if(!response.ok)throw Error(data.error||'Request failed');return data}
 function choice(items,idField,label){const select=document.createElement('select'),placeholder=document.createElement('option');placeholder.value='';placeholder.textContent=label;select.append(placeholder);for(const item of items){const option=document.createElement('option');option.value=item[idField];option.textContent=item.name;select.append(option)}return select}
-function render(items,vehicleItems,chauffeurItems){cards.replaceChildren();count.textContent=items.length+' request'+(items.length===1?'':'s');for(const item of items){const card=document.createElement('article');card.className='card';const who=document.createElement('div');field(who,item.name,'name');field(who,item.phone);field(who,item.email);field(who,item.booking_id,'ref');const trip=document.createElement('div');field(trip,item.trip_type+' · '+item.hub,'name');field(trip,item.pickup+' → '+item.destination);field(trip,item.pickup_at+' → '+item.end_at);const vehicle=document.createElement('div');field(vehicle,item.vehicle_preference||'No vehicle preference','name');field(vehicle,item.notes||'No notes','muted');if(item.quote_version){field(vehicle,'Latest quote v'+item.quote_version+' · NGN '+Number(item.quote_amount_ngn).toLocaleString(),'name');field(vehicle,'Payment: '+(item.payment_status||'NOT REQUESTED'),'muted')}const quoteAmount=document.createElement('input'),quoteExpiry=document.createElement('input'),quoteNotes=document.createElement('input'),issueQuote=document.createElement('button');quoteAmount.type='number';quoteAmount.min='1';quoteAmount.placeholder='Amount in NGN';quoteAmount.setAttribute('aria-label','Quote amount in NGN');quoteExpiry.type='datetime-local';quoteExpiry.setAttribute('aria-label','Quote expiry');quoteNotes.placeholder='Quote notes';quoteNotes.setAttribute('aria-label','Quote notes');issueQuote.textContent=item.quote_version?'Issue revision':'Issue quote';issueQuote.addEventListener('click',async()=>{if(!quoteAmount.value||!quoteExpiry.value){message.textContent='Enter a quote amount and expiry.';return}issueQuote.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id)+'/quotes',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({amount_ngn:Number(quoteAmount.value),valid_until:quoteExpiry.value,notes:quoteNotes.value})});await load()}catch(error){message.textContent=error.message}finally{issueQuote.disabled=false}});vehicle.append(quoteAmount,quoteExpiry,quoteNotes,issueQuote);if(item.quote_version&&item.payment_status!=='PENDING'&&item.payment_status!=='PAID'){const requestPayment=document.createElement('button');requestPayment.textContent='Create payment request';requestPayment.addEventListener('click',async()=>{requestPayment.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id)+'/payments',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});await load()}catch(error){message.textContent=error.message}finally{requestPayment.disabled=false}});vehicle.append(requestPayment)}const control=document.createElement('div'),select=document.createElement('select');for(const status of statuses){const option=document.createElement('option');option.value=option.textContent=status;option.selected=status===item.status;select.append(option)}select.addEventListener('change',async()=>{select.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:select.value})})}catch(error){message.textContent=error.message}finally{select.disabled=false}});control.append(select);if(!item.vehicle_id&&!item.chauffeur_id){const availableVehicles=vehicleItems.filter(resource=>resource.hub===item.hub&&resource.status==='AVAILABLE'),availableChauffeurs=chauffeurItems.filter(resource=>resource.hub===item.hub&&resource.status==='AVAILABLE'),vehicleChoice=choice(availableVehicles,'vehicle_id','Select vehicle'),chauffeurChoice=choice(availableChauffeurs,'chauffeur_id','Select chauffeur'),assign=document.createElement('button');assign.textContent='Assign';assign.addEventListener('click',async()=>{if(!vehicleChoice.value||!chauffeurChoice.value){message.textContent='Select both a vehicle and chauffeur.';return}assign.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id)+'/assignment',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({vehicle_id:vehicleChoice.value,chauffeur_id:chauffeurChoice.value})});await load()}catch(error){message.textContent=error.message}finally{assign.disabled=false}});control.append(vehicleChoice,chauffeurChoice,assign)}else{field(control,'Resources assigned','name')}card.append(who,trip,vehicle,control);cards.append(card)}}
+function render(items,vehicleItems,chauffeurItems){cards.replaceChildren();count.textContent=items.length+' request'+(items.length===1?'':'s');for(const item of items){const card=document.createElement('article');card.className='card';const who=document.createElement('div');field(who,item.name,'name');field(who,item.phone);field(who,item.email);field(who,item.booking_id,'ref');const trip=document.createElement('div');field(trip,item.trip_type+' · '+item.hub,'name');field(trip,item.pickup+' → '+item.destination);field(trip,item.pickup_at+' → '+item.end_at);const vehicle=document.createElement('div');field(vehicle,item.vehicle_preference||'No vehicle preference','name');field(vehicle,item.notes||'No notes','muted');if(item.quote_version){field(vehicle,'Latest quote v'+item.quote_version+' · NGN '+Number(item.quote_amount_ngn).toLocaleString(),'name');field(vehicle,'Quote: '+(item.quote_status||'ISSUED')+' · Payment: '+(item.payment_status||'NOT REQUESTED'),'muted')}if(['REQUESTED','REVIEWING','QUOTED'].includes(item.status)){const quoteAmount=document.createElement('input'),quoteExpiry=document.createElement('input'),quoteNotes=document.createElement('input'),issueQuote=document.createElement('button');quoteAmount.type='number';quoteAmount.min='1';quoteAmount.placeholder='Amount in NGN';quoteAmount.setAttribute('aria-label','Quote amount in NGN');quoteExpiry.type='datetime-local';quoteExpiry.setAttribute('aria-label','Quote expiry');quoteNotes.placeholder='Quote notes';quoteNotes.setAttribute('aria-label','Quote notes');issueQuote.textContent=item.quote_version?'Issue revision':'Issue quote';issueQuote.addEventListener('click',async()=>{if(!quoteAmount.value||!quoteExpiry.value){message.textContent='Enter a quote amount and expiry.';return}issueQuote.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id)+'/quotes',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({amount_ngn:Number(quoteAmount.value),valid_until:quoteExpiry.value,notes:quoteNotes.value})});await load()}catch(error){message.textContent=error.message}finally{issueQuote.disabled=false}});vehicle.append(quoteAmount,quoteExpiry,quoteNotes,issueQuote)}if(item.status==='QUOTED'&&item.quote_status==='ACCEPTED'&&item.payment_status!=='PENDING'&&item.payment_status!=='PAID'){const requestPayment=document.createElement('button');requestPayment.textContent='Create payment request';requestPayment.addEventListener('click',async()=>{requestPayment.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id)+'/payments',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});await load()}catch(error){message.textContent=error.message}finally{requestPayment.disabled=false}});vehicle.append(requestPayment)}const control=document.createElement('div'),select=document.createElement('select'),permitted=[item.status,...(item.allowed_transitions||[])];for(const status of permitted){const option=document.createElement('option');option.value=option.textContent=status;option.selected=status===item.status;select.append(option)}select.disabled=permitted.length===1;select.addEventListener('change',async()=>{select.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:select.value})});await load()}catch(error){message.textContent=error.message;await load()}});control.append(select);if(item.status==='CONFIRMED'&&!item.vehicle_id&&!item.chauffeur_id){const availableVehicles=vehicleItems.filter(resource=>resource.hub===item.hub&&resource.status==='AVAILABLE'),availableChauffeurs=chauffeurItems.filter(resource=>resource.hub===item.hub&&resource.status==='AVAILABLE'),vehicleChoice=choice(availableVehicles,'vehicle_id','Select vehicle'),chauffeurChoice=choice(availableChauffeurs,'chauffeur_id','Select chauffeur'),assign=document.createElement('button');assign.textContent='Assign';assign.addEventListener('click',async()=>{if(!vehicleChoice.value||!chauffeurChoice.value){message.textContent='Select both a vehicle and chauffeur.';return}assign.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id)+'/assignment',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({vehicle_id:vehicleChoice.value,chauffeur_id:chauffeurChoice.value})});await load()}catch(error){message.textContent=error.message}finally{assign.disabled=false}});control.append(vehicleChoice,chauffeurChoice,assign)}else if(item.vehicle_id||item.chauffeur_id){field(control,'Resources assigned','name')}card.append(who,trip,vehicle,control);cards.append(card)}}
 function renderResources(target,items,type){target.replaceChildren();const idField=type==='vehicles'?'vehicle_id':'chauffeur_id',options=type==='vehicles'?vehicleStatuses:chauffeurStatuses;for(const item of items){const card=document.createElement('article');card.className='resource';const details=document.createElement('div');field(details,item.name,'name');field(details,item.hub+(item.category?' · '+item.category:'')+(item.ownership?' · '+item.ownership:''));const select=document.createElement('select');for(const status of options){const option=document.createElement('option');option.value=option.textContent=status;option.selected=status===item.status;select.append(option)}select.disabled=currentRole!=='ADMIN';select.addEventListener('change',async()=>{select.disabled=true;try{await api('/admin/'+type+'/'+encodeURIComponent(item[idField]),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:select.value})})}catch(error){message.textContent=error.message}finally{select.disabled=currentRole!=='ADMIN'}});card.append(details,select);target.append(card)}}
 function renderNotifications(items){notifications.replaceChildren();for(const item of items){const card=document.createElement('article');card.className='notification';const details=document.createElement('div');field(details,item.event_type.replaceAll('_',' '),'name');field(details,item.message);field(details,'Booking '+item.booking_id,'ref');const action=document.createElement('button');action.textContent=item.status==='PENDING'?'Mark processed':item.status;action.disabled=item.status!=='PENDING';action.addEventListener('click',async()=>{action.disabled=true;try{await api('/admin/notifications/'+encodeURIComponent(item.notification_id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:'PROCESSED'})});await load()}catch(error){message.textContent=error.message}});card.append(details,action);notifications.append(card)}}
 async function load(){message.textContent='';try{const [session,bookingData,vehicleData,chauffeurData,notificationData]=await Promise.all([api('/admin/session'),api('/admin/bookings'),api('/admin/vehicles'),api('/admin/chauffeurs'),api('/admin/notifications')]);currentRole=session.role;roleLabel.textContent=currentRole==='ADMIN'?'Administrator · full fleet access':'Operator · fleet changes locked';document.querySelector('#vehicle-form').classList.toggle('hidden',currentRole!=='ADMIN');document.querySelector('#chauffeur-form').classList.toggle('hidden',currentRole!=='ADMIN');login.classList.add('hidden');dashboard.classList.remove('hidden');render(bookingData.bookings,vehicleData.items,chauffeurData.items);renderResources(vehicles,vehicleData.items,'vehicles');renderResources(chauffeurs,chauffeurData.items,'chauffeurs');renderNotifications(notificationData.notifications)}catch(error){message.textContent=error.message}}

@@ -144,6 +144,17 @@ class DemoHandlerTests(unittest.TestCase):
     def tearDown(self):
         handler.log_event = self.real_log_event
 
+    def confirm_booking(self, booking_response, staff_headers):
+        booking = json.loads(booking_response["body"])
+        booking_id = booking["booking_id"]
+        customer_headers = {"x-booking-token": booking["access_token"]}
+        handler.lambda_handler(event("PATCH", f"/admin/bookings/{booking_id}", {"status": "REVIEWING"}, staff_headers), None)
+        handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/quotes", {"amount_ngn": 150000, "valid_until": "2026-09-25T18:00"}, staff_headers), None)
+        handler.lambda_handler(event("PATCH", f"/bookings/{booking_id}/quote", {"decision": "ACCEPTED"}, customer_headers), None)
+        confirmed = handler.lambda_handler(event("PATCH", f"/admin/bookings/{booking_id}", {"status": "CONFIRMED"}, staff_headers), None)
+        self.assertEqual(confirmed["statusCode"], 200)
+        return booking
+
     def test_home_page_loads(self):
         result = handler.lambda_handler(event("GET", "/"), None)
         self.assertEqual(result["statusCode"], 200)
@@ -330,6 +341,11 @@ class DemoHandlerTests(unittest.TestCase):
         )
         self.assertEqual(updated["statusCode"], 200)
         self.assertEqual(json.loads(updated["body"])["status"], "REVIEWING")
+        refreshed = handler.lambda_handler(event("GET", "/admin/bookings", headers=headers), None)
+        workflow_item = next(item for item in json.loads(refreshed["body"])["bookings"] if item["booking_id"] == booking_id)
+        self.assertEqual(set(workflow_item["allowed_transitions"]), {"QUOTED", "DECLINED", "CANCELLED"})
+        invalid = handler.lambda_handler(event("PATCH", f"/admin/bookings/{booking_id}", {"status": "COMPLETED"}, headers), None)
+        self.assertEqual(invalid["statusCode"], 409)
 
     def test_admin_can_atomically_assign_resources(self):
         headers = {"x-admin-password": "test-admin-password"}
@@ -339,6 +355,11 @@ class DemoHandlerTests(unittest.TestCase):
         )
         vehicle = handler.lambda_handler(event("POST", "/admin/vehicles", {"name": "Lexus RX", "hub": "Oyo"}, headers), None)
         chauffeur = handler.lambda_handler(event("POST", "/admin/chauffeurs", {"name": "Assignment Chauffeur", "hub": "Oyo"}, headers), None)
+        premature = handler.lambda_handler(
+            event("PATCH", f"/admin/bookings/{json.loads(booking['body'])['booking_id']}/assignment", {"vehicle_id": json.loads(vehicle["body"])["vehicle_id"], "chauffeur_id": json.loads(chauffeur["body"])["chauffeur_id"]}, headers), None
+        )
+        self.assertEqual(premature["statusCode"], 409)
+        booking_body = self.confirm_booking(booking, headers)
         assigned = handler.lambda_handler(
             event(
                 "PATCH",
@@ -350,7 +371,6 @@ class DemoHandlerTests(unittest.TestCase):
         )
         self.assertEqual(assigned["statusCode"], 200)
         self.assertEqual(json.loads(assigned["body"])["status"], "ASSIGNED")
-        booking_body = json.loads(booking["body"])
         vehicle_id = json.loads(vehicle["body"])["vehicle_id"]
         chauffeur_id = json.loads(chauffeur["body"])["chauffeur_id"]
         overlapping = handler.lambda_handler(
@@ -381,6 +401,7 @@ class DemoHandlerTests(unittest.TestCase):
             event("PATCH", f"/admin/bookings/{booking_body['booking_id']}/assignment", {"vehicle_id": vehicle_id, "chauffeur_id": chauffeur_id}, headers), None
         )
         self.assertEqual(terminal_assignment["statusCode"], 409)
+        self.confirm_booking(overlapping, headers)
         reassigned = handler.lambda_handler(
             event("PATCH", f"/admin/bookings/{json.loads(overlapping['body'])['booking_id']}/assignment", {"vehicle_id": vehicle_id, "chauffeur_id": chauffeur_id}, headers), None
         )
