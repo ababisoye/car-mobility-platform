@@ -207,6 +207,8 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertIn("Check my booking", result["body"])
         self.assertIn("x-booking-token", result["body"])
         self.assertIn('<select id="destination_state"', result["body"])
+        self.assertIn("function syncInterstate()", result["body"])
+        self.assertIn("stateSelect.required=interstate", result["body"])
         for state in handler.NIGERIAN_STATES:
             with self.subTest(state=state):
                 self.assertIn(f'<option value="{state}">{state}</option>', result["body"])
