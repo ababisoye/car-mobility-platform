@@ -75,15 +75,13 @@ class MemoryDynamoClient:
             key = next(iter(update["Key"].values()))["S"]
             item = table.items[key]
             values = update["ExpressionAttributeValues"]
-            if update["TableName"] == "local-bookings":
-                item.update(
-                    status="ASSIGNED",
-                    vehicle_id=values[":vehicle"]["S"],
-                    chauffeur_id=values[":chauffeur"]["S"],
-                    updated_at=int(values[":updated"]["N"]),
-                )
+            if update["TableName"] == "local-bookings" and ":status" in values:
+                item.update(status=values[":status"]["S"], resources_released_at=int(values[":updated"]["N"]), updated_at=int(values[":updated"]["N"]))
+            elif update["TableName"] == "local-bookings":
+                item.update(status="ASSIGNED", vehicle_id=values[":vehicle"]["S"], chauffeur_id=values[":chauffeur"]["S"], updated_at=int(values[":updated"]["N"]))
             else:
-                item["status"] = values.get(":reserved", values.get(":assigned"))["S"]
+                target = ":available" if "= :available" in update["UpdateExpression"] else (":reserved" if ":reserved" in values else ":assigned")
+                item["status"] = values[target]["S"]
                 item["updated_at"] = int(values[":updated"]["N"])
         return {}
 

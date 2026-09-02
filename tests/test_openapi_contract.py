@@ -20,7 +20,7 @@ class OpenApiContractTests(unittest.TestCase):
     def test_contract_covers_every_lambda_route(self):
         expected = {
             ("GET", "/"), ("GET", "/health"), ("GET", "/openapi.json"), ("POST", "/bookings"),
-            ("GET", "/bookings/{booking_id}"), ("GET", "/bookings/{booking_id}/quote"), ("PATCH", "/bookings/{booking_id}/quote"), ("GET", "/bookings/{booking_id}/payment"),
+            ("GET", "/bookings/{booking_id}"), ("PATCH", "/bookings/{booking_id}"), ("GET", "/bookings/{booking_id}/quote"), ("PATCH", "/bookings/{booking_id}/quote"), ("GET", "/bookings/{booking_id}/payment"),
             ("GET", "/admin"), ("GET", "/admin/session"), ("GET", "/admin/bookings"), ("PATCH", "/admin/bookings/{booking_id}"),
             ("PATCH", "/admin/bookings/{booking_id}/assignment"), ("GET", "/admin/bookings/{booking_id}/quotes"), ("POST", "/admin/bookings/{booking_id}/quotes"),
             ("GET", "/admin/bookings/{booking_id}/payments"), ("POST", "/admin/bookings/{booking_id}/payments"),
@@ -37,6 +37,7 @@ class OpenApiContractTests(unittest.TestCase):
         self.assertEqual(schemes["staffPassword"]["name"], "x-staff-password")
         self.assertEqual(schemes["webhookSignature"]["name"], "x-webhook-signature")
         self.assertEqual(self.spec["paths"]["/bookings/{booking_id}"]["get"]["security"], [{"bookingToken": []}])
+        self.assertEqual(self.spec["paths"]["/bookings/{booking_id}"]["patch"]["security"], [{"bookingToken": []}])
         self.assertEqual(self.spec["paths"]["/bookings/{booking_id}/quote"]["patch"]["security"], [{"bookingToken": []}])
         self.assertEqual(self.spec["paths"]["/admin/bookings"]["get"]["security"], [{"staffPassword": []}])
         self.assertEqual(self.spec["paths"]["/webhooks/payments"]["post"]["security"], [{"webhookSignature": []}])

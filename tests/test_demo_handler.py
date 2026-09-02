@@ -78,15 +78,13 @@ class FakeDynamoClient:
             key = next(iter(update["Key"].values()))["S"]
             item = table.items[key]
             values = update["ExpressionAttributeValues"]
-            if update["TableName"] == "test-bookings":
-                item.update(
-                    status="ASSIGNED",
-                    vehicle_id=values[":vehicle"]["S"],
-                    chauffeur_id=values[":chauffeur"]["S"],
-                    updated_at=int(values[":updated"]["N"]),
-                )
+            if update["TableName"] == "test-bookings" and ":status" in values:
+                item.update(status=values[":status"]["S"], resources_released_at=int(values[":updated"]["N"]), updated_at=int(values[":updated"]["N"]))
+            elif update["TableName"] == "test-bookings":
+                item.update(status="ASSIGNED", vehicle_id=values[":vehicle"]["S"], chauffeur_id=values[":chauffeur"]["S"], updated_at=int(values[":updated"]["N"]))
             else:
-                item["status"] = values.get(":reserved", values.get(":assigned"))["S"]
+                target = ":available" if "= :available" in update["UpdateExpression"] else (":reserved" if ":reserved" in values else ":assigned")
+                item["status"] = values[target]["S"]
                 item["updated_at"] = int(values[":updated"]["N"])
         return {}
 
@@ -352,6 +350,9 @@ class DemoHandlerTests(unittest.TestCase):
         )
         self.assertEqual(assigned["statusCode"], 200)
         self.assertEqual(json.loads(assigned["body"])["status"], "ASSIGNED")
+        booking_body = json.loads(booking["body"])
+        vehicle_id = json.loads(vehicle["body"])["vehicle_id"]
+        chauffeur_id = json.loads(chauffeur["body"])["chauffeur_id"]
         overlapping = handler.lambda_handler(
             event("POST", "/bookings", {"name": "Conflict Test", "phone": "+2348000000003", "hub": "Oyo", "trip_type": "Local", "pickup": "Dugbe", "destination": "Bodija", "pickup_at": "2026-10-01T10:00", "end_at": "2026-10-01T13:00"}),
             None,
@@ -366,6 +367,30 @@ class DemoHandlerTests(unittest.TestCase):
             None,
         )
         self.assertEqual(rejected["statusCode"], 409)
+        invalid_cancel = handler.lambda_handler(
+            event("PATCH", f"/bookings/{booking_body['booking_id']}", {"action": "DELETE"}, {"x-booking-token": booking_body["access_token"]}), None
+        )
+        self.assertEqual(invalid_cancel["statusCode"], 400)
+        cancelled = handler.lambda_handler(
+            event("PATCH", f"/bookings/{booking_body['booking_id']}", {"action": "CANCEL"}, {"x-booking-token": booking_body["access_token"]}), None
+        )
+        self.assertEqual(json.loads(cancelled["body"])["status"], "CANCELLED")
+        self.assertEqual(FAKE_TABLES["test-vehicles"].items[vehicle_id]["status"], "AVAILABLE")
+        self.assertEqual(FAKE_TABLES["test-chauffeurs"].items[chauffeur_id]["status"], "AVAILABLE")
+        terminal_assignment = handler.lambda_handler(
+            event("PATCH", f"/admin/bookings/{booking_body['booking_id']}/assignment", {"vehicle_id": vehicle_id, "chauffeur_id": chauffeur_id}, headers), None
+        )
+        self.assertEqual(terminal_assignment["statusCode"], 409)
+        reassigned = handler.lambda_handler(
+            event("PATCH", f"/admin/bookings/{json.loads(overlapping['body'])['booking_id']}/assignment", {"vehicle_id": vehicle_id, "chauffeur_id": chauffeur_id}, headers), None
+        )
+        self.assertEqual(reassigned["statusCode"], 200)
+        second_booking_id = json.loads(overlapping["body"])["booking_id"]
+        handler.lambda_handler(event("PATCH", f"/admin/bookings/{second_booking_id}", {"status": "IN_PROGRESS"}, headers), None)
+        completed = handler.lambda_handler(event("PATCH", f"/admin/bookings/{second_booking_id}", {"status": "COMPLETED"}, headers), None)
+        self.assertEqual(json.loads(completed["body"])["status"], "COMPLETED")
+        self.assertEqual(FAKE_TABLES["test-vehicles"].items[vehicle_id]["status"], "AVAILABLE")
+        self.assertEqual(FAKE_TABLES["test-chauffeurs"].items[chauffeur_id]["status"], "AVAILABLE")
 
     def test_admin_can_manage_vehicle_availability(self):
         headers = {"x-admin-password": "test-admin-password"}
@@ -456,6 +481,8 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertEqual(json.loads(public_status["body"])["status"], "PAID")
         self.assertEqual(json.loads(booking_status["body"])["status"], "CONFIRMED")
         self.assertEqual(len(payment_confirmations), 1)
+        paid_cancellation = handler.lambda_handler(event("PATCH", f"/bookings/{booking_id}", {"action": "CANCEL"}, customer_headers), None)
+        self.assertEqual(paid_cancellation["statusCode"], 409)
 
     def test_payment_webhook_rejects_invalid_signature(self):
         result = handler.lambda_handler(event("POST", "/webhooks/payments", {"event_id": "bad", "payment_id": "unknown", "status": "PAID"}, {"x-webhook-signature": "invalid"}), None)

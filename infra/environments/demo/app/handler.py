@@ -251,6 +251,69 @@ def list_bookings(event):
     return response(200, {"bookings": items, "count": len(items), "limited": "Last 50 scanned records"})
 
 
+def change_booking_status(booking, status):
+    booking_id = booking["booking_id"]
+    current_status = booking.get("status", "")
+    now = int(time.time())
+    release_resources = status in {"DECLINED", "CANCELLED", "COMPLETED"} and all(
+        booking.get(field) for field in ("vehicle_id", "chauffeur_id")
+    )
+    try:
+        if release_resources:
+            DYNAMO_CLIENT.transact_write_items(
+                TransactItems=[
+                    {"Update": {"TableName": BOOKINGS_TABLE_NAME, "Key": {"booking_id": {"S": booking_id}}, "UpdateExpression": "SET #s = :status, resources_released_at = :updated, updated_at = :updated", "ConditionExpression": "#s = :current_status", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":status": {"S": status}, ":current_status": {"S": current_status}, ":updated": {"N": str(now)}}}},
+                    {"Update": {"TableName": VEHICLES_TABLE_NAME, "Key": {"vehicle_id": {"S": booking["vehicle_id"]}}, "UpdateExpression": "SET #s = :available, updated_at = :updated", "ConditionExpression": "#s = :reserved", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":available": {"S": "AVAILABLE"}, ":reserved": {"S": "RESERVED"}, ":updated": {"N": str(now)}}}},
+                    {"Update": {"TableName": CHAUFFEURS_TABLE_NAME, "Key": {"chauffeur_id": {"S": booking["chauffeur_id"]}}, "UpdateExpression": "SET #s = :available, updated_at = :updated", "ConditionExpression": "#s = :assigned", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":available": {"S": "AVAILABLE"}, ":assigned": {"S": "ASSIGNED"}, ":updated": {"N": str(now)}}}},
+                ]
+            )
+            updated = {**booking, "status": status, "resources_released_at": now, "updated_at": now}
+        else:
+            result = TABLE.update_item(
+                Key={"booking_id": booking_id},
+                UpdateExpression="SET #s = :status, updated_at = :updated",
+                ConditionExpression="attribute_exists(booking_id) AND #s = :current_status",
+                ExpressionAttributeNames={"#s": "status"},
+                ExpressionAttributeValues={":status": status, ":current_status": current_status, ":updated": now},
+                ReturnValues="ALL_NEW",
+            )
+            updated = result["Attributes"]
+    except Exception as error:
+        error_response = getattr(error, "response", {})
+        if error_response.get("Error", {}).get("Code") in {"ConditionalCheckFailedException", "TransactionCanceledException"}:
+            return None
+        raise
+    if status in {"DECLINED", "CANCELLED", "COMPLETED"}:
+        messages = {
+            "DECLINED": "The booking request was declined.",
+            "CANCELLED": "The booking was cancelled.",
+            "COMPLETED": "The trip was completed. Thank you for riding with us.",
+        }
+        queue_notification(booking_id, f"BOOKING_{status}", messages[status])
+    log_event("booking_status_changed", booking_id=booking_id, previous_status=current_status, status=status, resources_released=release_resources)
+    return updated
+
+
+def cancel_booking(event, booking_id):
+    booking = TABLE.get_item(Key={"booking_id": booking_id}).get("Item")
+    if not booking_access_allowed(event, booking):
+        return response(404, {"error": "Booking request not found."})
+    try:
+        action = clean(json.loads(event.get("body") or "{}").get("action"), 20).upper()
+    except json.JSONDecodeError:
+        return response(400, {"error": "Request body must be valid JSON."})
+    if action != "CANCEL":
+        return response(400, {"error": "Action must be CANCEL."})
+    if booking.get("status") in {"IN_PROGRESS", "COMPLETED", "CANCELLED", "DECLINED"}:
+        return response(409, {"error": "This booking can no longer be cancelled online."})
+    if booking.get("payment_status") == "PAID":
+        return response(409, {"error": "Contact operations to cancel a paid booking and arrange any refund."})
+    updated = change_booking_status(booking, "CANCELLED")
+    if not updated:
+        return response(409, {"error": "The booking changed while cancellation was submitted; refresh and try again."})
+    return response(200, {"booking_id": booking_id, "status": "CANCELLED"})
+
+
 def update_booking(event, booking_id):
     denied = require_admin(event)
     if denied:
@@ -267,21 +330,10 @@ def update_booking(event, booking_id):
         return response(404, {"error": "Booking request not found."})
     if status in {"ASSIGNED", "IN_PROGRESS", "COMPLETED"} and not all(current.get(field) for field in ("vehicle_id", "chauffeur_id")):
         return response(409, {"error": "Assign a vehicle and chauffeur before selecting this status."})
-    try:
-        result = TABLE.update_item(
-            Key={"booking_id": booking_id},
-            UpdateExpression="SET #s = :status, updated_at = :updated",
-            ConditionExpression="attribute_exists(booking_id)",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":status": status, ":updated": int(time.time())},
-            ReturnValues="ALL_NEW",
-        )
-    except Exception as error:
-        error_response = getattr(error, "response", {})
-        if error_response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return response(404, {"error": "Booking request not found."})
-        raise
-    return response(200, result["Attributes"])
+    updated = change_booking_status(current, status)
+    if not updated:
+        return response(409, {"error": "The booking or assigned resources changed; refresh and try again."})
+    return response(200, updated)
 
 
 def availability_records(event, table, id_field, record_type):
@@ -367,6 +419,8 @@ def assign_booking(event, booking_id):
     chauffeur = CHAUFFEURS.get_item(Key={"chauffeur_id": chauffeur_id}).get("Item")
     if not booking or not vehicle or not chauffeur:
         return response(404, {"error": "Booking, vehicle or chauffeur was not found."})
+    if booking.get("status") in {"DECLINED", "CANCELLED", "COMPLETED"}:
+        return response(409, {"error": "A terminal booking cannot receive an assignment."})
     if vehicle.get("hub") != booking.get("hub") or chauffeur.get("hub") != booking.get("hub"):
         return response(409, {"error": "Vehicle and chauffeur must belong to the booking hub."})
     if vehicle.get("status") != "AVAILABLE" or chauffeur.get("status") != "AVAILABLE":
@@ -381,7 +435,7 @@ def assign_booking(event, booking_id):
     try:
         DYNAMO_CLIENT.transact_write_items(
             TransactItems=[
-                {"Update": {"TableName": BOOKINGS_TABLE_NAME, "Key": {"booking_id": {"S": booking_id}}, "UpdateExpression": "SET #s = :assigned, vehicle_id = :vehicle, chauffeur_id = :chauffeur, updated_at = :updated", "ConditionExpression": "attribute_exists(booking_id) AND #s <> :assigned", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":assigned": {"S": "ASSIGNED"}, ":vehicle": {"S": vehicle_id}, ":chauffeur": {"S": chauffeur_id}, ":updated": {"N": now}}}},
+                {"Update": {"TableName": BOOKINGS_TABLE_NAME, "Key": {"booking_id": {"S": booking_id}}, "UpdateExpression": "SET #s = :assigned, vehicle_id = :vehicle, chauffeur_id = :chauffeur, updated_at = :updated", "ConditionExpression": "attribute_exists(booking_id) AND #s <> :assigned AND #s <> :cancelled AND #s <> :declined AND #s <> :completed", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":assigned": {"S": "ASSIGNED"}, ":cancelled": {"S": "CANCELLED"}, ":declined": {"S": "DECLINED"}, ":completed": {"S": "COMPLETED"}, ":vehicle": {"S": vehicle_id}, ":chauffeur": {"S": chauffeur_id}, ":updated": {"N": now}}}},
                 {"Update": {"TableName": VEHICLES_TABLE_NAME, "Key": {"vehicle_id": {"S": vehicle_id}}, "UpdateExpression": "SET #s = :reserved, updated_at = :updated", "ConditionExpression": "#s = :available", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":reserved": {"S": "RESERVED"}, ":available": {"S": "AVAILABLE"}, ":updated": {"N": now}}}},
                 {"Update": {"TableName": CHAUFFEURS_TABLE_NAME, "Key": {"chauffeur_id": {"S": chauffeur_id}}, "UpdateExpression": "SET #s = :assigned, updated_at = :updated", "ConditionExpression": "#s = :available", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":assigned": {"S": "ASSIGNED"}, ":available": {"S": "AVAILABLE"}, ":updated": {"N": now}}}},
             ]
@@ -412,6 +466,8 @@ def manage_quotes(event, booking_id):
     quotes = booking_quotes(booking_id)
     if method == "GET":
         return response(200, {"quotes": quotes, "count": len(quotes)})
+    if booking.get("status") in {"DECLINED", "CANCELLED", "COMPLETED"}:
+        return response(409, {"error": "A terminal booking cannot receive a new quote."})
     try:
         data = json.loads(event.get("body") or "{}")
         amount_ngn = int(data.get("amount_ngn"))
@@ -473,6 +529,8 @@ def decide_quote(event, booking_id):
     booking = TABLE.get_item(Key={"booking_id": booking_id}).get("Item")
     if not booking_access_allowed(event, booking):
         return response(404, {"error": "Booking request not found."})
+    if booking.get("status") in {"DECLINED", "CANCELLED", "COMPLETED"}:
+        return response(409, {"error": "A terminal booking cannot receive a quote decision."})
     try:
         data = json.loads(event.get("body") or "{}")
     except json.JSONDecodeError:
@@ -530,6 +588,8 @@ def manage_payments(event, booking_id):
     payments = booking_payments(booking_id)
     if method == "GET":
         return response(200, {"payments": payments, "count": len(payments)})
+    if booking.get("status") in {"DECLINED", "CANCELLED", "COMPLETED"}:
+        return response(409, {"error": "A terminal booking cannot receive a payment request."})
     quotes = booking_quotes(booking_id)
     if not quotes:
         return response(409, {"error": "Issue a quote before creating a payment request."})
@@ -667,8 +727,8 @@ def page():
 <div class="full"><label for="notes">Notes</label><textarea id="notes" name="notes" maxlength="500"></textarea></div>
 <div class="full"><button id="submit" type="submit">Request a quote</button></div></div></form><div id="result" class="result" role="status"></div>
 <p class="fine">Requests are automatically deleted after 30 days. Do not submit identity documents, payment details or sensitive personal information.</p>
-<section class="lookup"><div class="eyebrow">Customer access</div><h2>Check my booking</h2><p class="lead">Use the reference and private token shown when the request was created.</p><form id="lookup" class="lookup-grid"><label>Booking reference<input id="lookup-reference" required autocomplete="off"></label><label>Access token<input id="lookup-token" type="password" required autocomplete="off"></label><button id="lookup-submit" type="submit">Check status</button></form><div id="lookup-result" class="result" role="status"></div><div id="quote-actions" class="decision-actions"><button id="accept-quote" type="button">Accept latest quote</button><button id="decline-quote" class="decline" type="button">Decline latest quote</button></div></section></main>
-<script>const f=document.querySelector('#booking'),b=document.querySelector('#submit'),r=document.querySelector('#result'),lookup=document.querySelector('#lookup'),lookupButton=document.querySelector('#lookup-submit'),lookupResult=document.querySelector('#lookup-result'),reference=document.querySelector('#lookup-reference'),token=document.querySelector('#lookup-token'),quoteActions=document.querySelector('#quote-actions'),acceptQuote=document.querySelector('#accept-quote'),declineQuote=document.querySelector('#decline-quote');let currentCustomer=null;f.addEventListener('submit',async e=>{e.preventDefault();b.disabled=true;r.style.display='block';r.textContent='Submitting…';const data=Object.fromEntries(new FormData(f));try{const x=await fetch('/bookings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)}),j=await x.json();if(!x.ok)throw Error(j.error||'Request failed');r.textContent='Request recorded.\\nReference: '+j.booking_id+'\\nAccess token (save now): '+j.access_token;reference.value=j.booking_id;token.value=j.access_token;f.reset()}catch(err){r.textContent=err.message}finally{b.disabled=false}});async function customerRequest(path,headers,optional=false,options={}){const response=await fetch(path,{...options,headers:{...headers,...(options.headers||{})}}),data=await response.json();if(optional&&response.status===404)return null;if(!response.ok)throw Error(data.error||'Request failed');return data}lookup.addEventListener('submit',async e=>{e.preventDefault();lookupButton.disabled=true;quoteActions.classList.remove('visible');lookupResult.style.display='block';lookupResult.textContent='Checking…';const id=reference.value.trim(),headers={'x-booking-token':token.value};try{const status=await customerRequest('/bookings/'+encodeURIComponent(id),headers),[quote,payment]=await Promise.all([customerRequest('/bookings/'+encodeURIComponent(id)+'/quote',headers,true),customerRequest('/bookings/'+encodeURIComponent(id)+'/payment',headers,true)]),lines=['Booking status: '+status.status,quote?'Latest quote: NGN '+Number(quote.amount_ngn).toLocaleString()+' · '+quote.status:'Latest quote: not issued',payment?'Payment: '+payment.status:'Payment: not requested'];currentCustomer={id,headers};lookupResult.textContent=lines.join('\\n');quoteActions.classList.toggle('visible',Boolean(quote&&quote.status==='ISSUED'))}catch(err){currentCustomer=null;lookupResult.textContent=err.message}finally{lookupButton.disabled=false}});async function decide(decision){if(!currentCustomer)return;acceptQuote.disabled=declineQuote.disabled=true;try{await customerRequest('/bookings/'+encodeURIComponent(currentCustomer.id)+'/quote',currentCustomer.headers,false,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({decision})});lookup.requestSubmit()}catch(err){lookupResult.textContent=err.message}finally{acceptQuote.disabled=declineQuote.disabled=false}}acceptQuote.addEventListener('click',()=>decide('ACCEPTED'));declineQuote.addEventListener('click',()=>decide('DECLINED'));</script></body></html>"""
+<section class="lookup"><div class="eyebrow">Customer access</div><h2>Check my booking</h2><p class="lead">Use the reference and private token shown when the request was created.</p><form id="lookup" class="lookup-grid"><label>Booking reference<input id="lookup-reference" required autocomplete="off"></label><label>Access token<input id="lookup-token" type="password" required autocomplete="off"></label><button id="lookup-submit" type="submit">Check status</button></form><div id="lookup-result" class="result" role="status"></div><div id="quote-actions" class="decision-actions"><button id="accept-quote" type="button">Accept latest quote</button><button id="decline-quote" class="decline" type="button">Decline latest quote</button></div><div id="booking-actions" class="decision-actions"><button id="cancel-booking" class="decline" type="button">Cancel booking</button></div></section></main>
+<script>const f=document.querySelector('#booking'),b=document.querySelector('#submit'),r=document.querySelector('#result'),lookup=document.querySelector('#lookup'),lookupButton=document.querySelector('#lookup-submit'),lookupResult=document.querySelector('#lookup-result'),reference=document.querySelector('#lookup-reference'),token=document.querySelector('#lookup-token'),quoteActions=document.querySelector('#quote-actions'),bookingActions=document.querySelector('#booking-actions'),acceptQuote=document.querySelector('#accept-quote'),declineQuote=document.querySelector('#decline-quote'),cancelBooking=document.querySelector('#cancel-booking');let currentCustomer=null;f.addEventListener('submit',async e=>{e.preventDefault();b.disabled=true;r.style.display='block';r.textContent='Submitting…';const data=Object.fromEntries(new FormData(f));try{const x=await fetch('/bookings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)}),j=await x.json();if(!x.ok)throw Error(j.error||'Request failed');r.textContent='Request recorded.\\nReference: '+j.booking_id+'\\nAccess token (save now): '+j.access_token;reference.value=j.booking_id;token.value=j.access_token;f.reset()}catch(err){r.textContent=err.message}finally{b.disabled=false}});async function customerRequest(path,headers,optional=false,options={}){const response=await fetch(path,{...options,headers:{...headers,...(options.headers||{})}}),data=await response.json();if(optional&&response.status===404)return null;if(!response.ok)throw Error(data.error||'Request failed');return data}lookup.addEventListener('submit',async e=>{e.preventDefault();lookupButton.disabled=true;quoteActions.classList.remove('visible');bookingActions.classList.remove('visible');lookupResult.style.display='block';lookupResult.textContent='Checking…';const id=reference.value.trim(),headers={'x-booking-token':token.value};try{const status=await customerRequest('/bookings/'+encodeURIComponent(id),headers),[quote,payment]=await Promise.all([customerRequest('/bookings/'+encodeURIComponent(id)+'/quote',headers,true),customerRequest('/bookings/'+encodeURIComponent(id)+'/payment',headers,true)]),lines=['Booking status: '+status.status,quote?'Latest quote: NGN '+Number(quote.amount_ngn).toLocaleString()+' · '+quote.status:'Latest quote: not issued',payment?'Payment: '+payment.status:'Payment: not requested'];currentCustomer={id,headers};lookupResult.textContent=lines.join('\\n');quoteActions.classList.toggle('visible',Boolean(quote&&quote.status==='ISSUED'));bookingActions.classList.toggle('visible',!['IN_PROGRESS','COMPLETED','CANCELLED','DECLINED'].includes(status.status)&&(!payment||payment.status!=='PAID'))}catch(err){currentCustomer=null;lookupResult.textContent=err.message}finally{lookupButton.disabled=false}});async function decide(decision){if(!currentCustomer)return;acceptQuote.disabled=declineQuote.disabled=true;try{await customerRequest('/bookings/'+encodeURIComponent(currentCustomer.id)+'/quote',currentCustomer.headers,false,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({decision})});lookup.requestSubmit()}catch(err){lookupResult.textContent=err.message}finally{acceptQuote.disabled=declineQuote.disabled=false}}acceptQuote.addEventListener('click',()=>decide('ACCEPTED'));declineQuote.addEventListener('click',()=>decide('DECLINED'));cancelBooking.addEventListener('click',async()=>{if(!currentCustomer||!confirm('Cancel this booking request?'))return;cancelBooking.disabled=true;try{await customerRequest('/bookings/'+encodeURIComponent(currentCustomer.id),currentCustomer.headers,false,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({action:'CANCEL'})});lookup.requestSubmit()}catch(err){lookupResult.textContent=err.message}finally{cancelBooking.disabled=false}});</script></body></html>"""
 
 
 def admin_page():
@@ -753,6 +813,8 @@ def route_request(event):
         return latest_payment(event, resource_id(1))
     if method == "GET" and len(parts) == 2 and parts[0] == "bookings" and resource_id(1):
         return booking_status(event, resource_id(1))
+    if method == "PATCH" and len(parts) == 2 and parts[0] == "bookings" and resource_id(1):
+        return cancel_booking(event, resource_id(1))
     return response(404, {"error": "Not found."})
 
 

@@ -31,7 +31,8 @@
     },
     "/bookings/{booking_id}": {
       "parameters": [{"$ref": "#/components/parameters/BookingId"}],
-      "get": {"tags": ["Customer"], "summary": "Read limited booking status", "security": [{"bookingToken": []}], "responses": {"200": {"description": "Booking status"}, "404": {"$ref": "#/components/responses/NotFound"}}}
+      "get": {"tags": ["Customer"], "summary": "Read limited booking status", "security": [{"bookingToken": []}], "responses": {"200": {"description": "Booking status"}, "404": {"$ref": "#/components/responses/NotFound"}}},
+      "patch": {"tags": ["Customer"], "summary": "Cancel an unpaid booking before the trip starts", "security": [{"bookingToken": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BookingCancellation"}}}}, "responses": {"200": {"description": "Booking cancelled"}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}}}
     },
     "/bookings/{booking_id}/quote": {
       "parameters": [{"$ref": "#/components/parameters/BookingId"}],
@@ -127,6 +128,7 @@
         }
       },
       "BookingCreated": {"type": "object", "required": ["booking_id", "access_token", "status", "message"], "properties": {"booking_id": {"type": "string", "format": "uuid"}, "access_token": {"type": "string", "writeOnly": true}, "status": {"const": "REQUESTED"}, "message": {"type": "string"}}},
+      "BookingCancellation": {"type": "object", "required": ["action"], "additionalProperties": false, "properties": {"action": {"const": "CANCEL"}}},
       "QuoteDecision": {"type": "object", "required": ["decision"], "additionalProperties": false, "properties": {"decision": {"enum": ["ACCEPTED", "DECLINED"]}}}
     }
   }
