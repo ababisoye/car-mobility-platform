@@ -817,16 +817,19 @@ def notification_outbox(event, notification_id=None):
     try:
         result = NOTIFICATIONS.update_item(
             Key={"notification_id": notification_id},
-            UpdateExpression="SET #s = :status, updated_at = :updated",
-            ConditionExpression="attribute_exists(notification_id)",
+            UpdateExpression="SET #s = :status, updated_at = :updated, processed_by_role = :role",
+            ConditionExpression="attribute_exists(notification_id) AND #s = :pending",
             ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":status": status, ":updated": int(time.time())},
+            ExpressionAttributeValues={":status": status, ":updated": int(time.time()), ":pending": "PENDING", ":role": ACTOR_ROLE.get()},
             ReturnValues="ALL_NEW",
         )
     except Exception as error:
         error_response = getattr(error, "response", {})
         if error_response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return response(404, {"error": "Notification not found."})
+            existing = NOTIFICATIONS.get_item(Key={"notification_id": notification_id}).get("Item")
+            if not existing:
+                return response(404, {"error": "Notification not found."})
+            return response(409, {"error": f"Notification is already {existing.get('status', 'finalized')}."})
         raise
     return response(200, result["Attributes"])
 

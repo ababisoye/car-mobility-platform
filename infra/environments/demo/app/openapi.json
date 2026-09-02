@@ -95,7 +95,7 @@
     },
     "/admin/notifications/{notification_id}": {
       "parameters": [{"name": "notification_id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
-      "patch": {"tags": ["Operations"], "summary": "Mark an outbox event processed or dismissed", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Notification updated"}}}
+      "patch": {"tags": ["Operations"], "summary": "Finalize a pending outbox event", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Notification finalized"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}}}
     },
     "/webhooks/payments": {
       "post": {"tags": ["Providers"], "summary": "Apply a signed, idempotent payment event", "security": [{"webhookSignature": []}], "responses": {"200": {"description": "Event applied or duplicate acknowledged"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "409": {"$ref": "#/components/responses/Conflict"}}}

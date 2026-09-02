@@ -22,6 +22,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Lets token-authenticated customers accept or decline only the latest unexpired quote
 - Applies quote issuance and customer decisions with their notifications atomically
 - Queues booking, quote and assignment events in a provider-neutral notification outbox
+- Prevents staff from overwriting finalized notification-outbox decisions
 - Creates payment requests from approved quotes and verifies signed, idempotent payment webhooks
 - Applies payment, provider-event, booking and notification changes in one atomic DynamoDB transaction
 - Creates each payment request, booking link and notification atomically
@@ -221,6 +222,8 @@ Set `payment_webhook_secret` to a separate random value of at least 32 character
 The dashboard authentication is deliberately small and cost-free: HTTPS carries a staff password and Lambda verifies it against a salted PBKDF2 hash. Administrators control fleet records; operators can run booking, quote, payment, assignment and notification workflows but cannot change fleet availability. See the [access-control model](docs/access-control.md). For production, replace shared role credentials with individual managed identities, MFA and durable user-level audit history.
 
 Notification events are stored but not sent in zero-funding mode. A later provider adapter can deliver them by email, SMS or WhatsApp without coupling booking logic to one vendor.
+
+Outbox records can move from pending to processed or dismissed only once; concurrent staff decisions cannot overwrite the first result. See [notification outbox integrity](docs/notification-outbox.md).
 
 Payment requests are also provider-neutral. A customer must first accept the latest quote with their one-time booking token; staff can then create a payment request at `POST /admin/bookings/{booking_id}/payments`. Customers can check `GET /bookings/{booking_id}/payment`, and a future provider posts signed status events to `POST /webhooks/payments`. Webhook event IDs are retained for 30 days so retries do not apply the same event twice. See [quote decisions](docs/quote-decisions.md).
 

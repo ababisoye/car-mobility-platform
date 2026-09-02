@@ -12,6 +12,10 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 
+class FakeConditionalCheckFailed(Exception):
+    response = {"Error": {"Code": "ConditionalCheckFailedException"}}
+
+
 class FakeTable:
     def __init__(self):
         self.items = {}
@@ -31,9 +35,15 @@ class FakeTable:
         return {"Items": list(self.items.values())}
 
     def update_item(self, Key, ExpressionAttributeValues, **kwargs):
-        item = self.items[next(iter(Key.values()))]
+        item = self.items.get(next(iter(Key.values())))
+        if item is None:
+            raise FakeConditionalCheckFailed()
+        if ":pending" in ExpressionAttributeValues and item.get("status") != ExpressionAttributeValues[":pending"]:
+            raise FakeConditionalCheckFailed()
         if ":status" in ExpressionAttributeValues:
             item["status"] = ExpressionAttributeValues[":status"]
+        if ":role" in ExpressionAttributeValues:
+            item["processed_by_role"] = ExpressionAttributeValues[":role"]
         if ":quoted" in ExpressionAttributeValues:
             item.update(
                 status=ExpressionAttributeValues[":quoted"],
@@ -373,6 +383,16 @@ class DemoHandlerTests(unittest.TestCase):
             None,
         )
         self.assertEqual(json.loads(processed["body"])["status"], "PROCESSED")
+        repeated = handler.lambda_handler(
+            event("PATCH", f"/admin/notifications/{pending['notification_id']}", {"status": "DISMISSED"}, headers), None
+        )
+        missing = handler.lambda_handler(
+            event("PATCH", "/admin/notifications/70000000-0000-4000-8000-000000000007", {"status": "PROCESSED"}, headers), None
+        )
+        self.assertEqual(repeated["statusCode"], 409)
+        self.assertEqual(missing["statusCode"], 404)
+        self.assertEqual(FAKE_TABLES["test-notifications"].items[pending["notification_id"]]["status"], "PROCESSED")
+        self.assertEqual(FAKE_TABLES["test-notifications"].items[pending["notification_id"]]["processed_by_role"], "ADMIN")
 
     def test_admin_dashboard_requires_password(self):
         page = handler.lambda_handler(event("GET", "/admin"), None)
