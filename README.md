@@ -47,6 +47,7 @@ Contributions are welcome through the [contribution guide](CONTRIBUTING.md). Rep
 - Enforces zero-funding service, capacity, concurrency, retention and IAM guardrails in CI
 - Pins third-party CI actions to immutable commits with least-privilege workflow tests
 - Blocks common secrets and sensitive deployment artifacts from the public repository in CI
+- Verifies that Markdown documentation and image links resolve inside the repository
 - Documented a production growth path without forcing production cost on the MVP
 
 ## Architecture
