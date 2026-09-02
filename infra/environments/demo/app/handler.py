@@ -744,19 +744,27 @@ def payment_webhook(event):
     if payment.get("status") == "PAID" and status != "PAID":
         return response(409, {"error": "A confirmed payment cannot be changed to failed."})
     now = int(time.time())
-    updated = PAYMENTS.update_item(Key={"record_id": payment_key}, UpdateExpression="SET #s = :status, updated_at = :updated", ConditionExpression="attribute_exists(record_id)", ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":status": status, ":updated": now}, ReturnValues="ALL_NEW")["Attributes"]
+    booking_status = "CONFIRMED" if status == "PAID" else "QUOTED"
+    notification_id = str(uuid.uuid4())
+    notification_event = "PAYMENT_CONFIRMED" if status == "PAID" else "PAYMENT_FAILED"
+    notification_message = "Your payment was confirmed." if status == "PAID" else "Your payment attempt was not successful."
     try:
-        PAYMENTS.put_item(Item={"schema_version": SCHEMA_VERSION, "record_id": event_key, "record_type": "WEBHOOK_EVENT", "event_id": event_id, "payment_id": payment_id, "status": status, "created_at": now, "expires_at": now + (30 * 86400)}, ConditionExpression="attribute_not_exists(record_id)")
+        DYNAMO_CLIENT.transact_write_items(TransactItems=[
+            {"Update": {"TableName": PAYMENTS_TABLE_NAME, "Key": {"record_id": {"S": payment_key}}, "UpdateExpression": "SET #s = :status, updated_at = :updated", "ConditionExpression": "attribute_exists(record_id) AND #s = :current_status", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":status": {"S": status}, ":current_status": {"S": payment["status"]}, ":updated": {"N": str(now)}}}},
+            {"Put": {"TableName": PAYMENTS_TABLE_NAME, "Item": {"schema_version": {"N": str(SCHEMA_VERSION)}, "record_id": {"S": event_key}, "record_type": {"S": "WEBHOOK_EVENT"}, "event_id": {"S": event_id}, "payment_id": {"S": payment_id}, "status": {"S": status}, "created_at": {"N": str(now)}, "expires_at": {"N": str(now + (30 * 86400))}}, "ConditionExpression": "attribute_not_exists(record_id)"}},
+            {"Update": {"TableName": BOOKINGS_TABLE_NAME, "Key": {"booking_id": {"S": payment["booking_id"]}}, "UpdateExpression": "SET #s = :booking_status, payment_status = :payment_status, updated_at = :updated", "ConditionExpression": "attribute_exists(booking_id)", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":booking_status": {"S": booking_status}, ":payment_status": {"S": status}, ":updated": {"N": str(now)}}}},
+            {"Put": {"TableName": NOTIFICATIONS_TABLE_NAME, "Item": {"schema_version": {"N": str(SCHEMA_VERSION)}, "notification_id": {"S": notification_id}, "booking_id": {"S": payment["booking_id"]}, "event_type": {"S": notification_event}, "audience": {"S": "CUSTOMER"}, "channel": {"S": "PENDING_PROVIDER"}, "message": {"S": notification_message}, "status": {"S": "PENDING"}, "created_at": {"N": str(now)}, "expires_at": {"N": str(now + (30 * 86400))}}, "ConditionExpression": "attribute_not_exists(notification_id)"}},
+        ])
     except Exception as error:
         error_response = getattr(error, "response", {})
-        if error_response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return response(200, {"event_id": event_id, "payment_id": payment_id, "status": status, "duplicate": True})
+        if error_response.get("Error", {}).get("Code") == "TransactionCanceledException":
+            recorded = PAYMENTS.get_item(Key={"record_id": event_key}).get("Item")
+            if recorded:
+                return response(200, {"event_id": event_id, "payment_id": recorded["payment_id"], "status": recorded["status"], "duplicate": True})
+            return response(409, {"error": "The payment or booking changed while the provider event was applied."})
         raise
-    booking_status = "CONFIRMED" if status == "PAID" else "QUOTED"
-    TABLE.update_item(Key={"booking_id": payment["booking_id"]}, UpdateExpression="SET #s = :booking_status, payment_status = :payment_status, updated_at = :updated", ExpressionAttributeNames={"#s": "status"}, ExpressionAttributeValues={":booking_status": booking_status, ":payment_status": status, ":updated": now})
-    queue_notification(payment["booking_id"], "PAYMENT_CONFIRMED" if status == "PAID" else "PAYMENT_FAILED", "Your payment was confirmed." if status == "PAID" else "Your payment attempt was not successful.")
     log_event("payment_webhook_applied", booking_id=payment["booking_id"], payment_id=payment_id, provider_event_id=event_id, payment_status=status)
-    return response(200, {"event_id": event_id, "payment_id": payment_id, "status": updated["status"], "duplicate": False})
+    return response(200, {"event_id": event_id, "payment_id": payment_id, "status": status, "duplicate": False})
 
 
 def notification_outbox(event, notification_id=None):

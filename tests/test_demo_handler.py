@@ -73,12 +73,26 @@ FAKE_TABLES = {
 class FakeDynamoClient:
     def transact_write_items(self, TransactItems):
         for transaction in TransactItems:
+            if "Put" in transaction:
+                put = transaction["Put"]
+                item = {
+                    key: (int(value["N"]) if "N" in value else value["S"])
+                    for key, value in put["Item"].items()
+                }
+                table = FAKE_TABLES[put["TableName"]]
+                item_key = next(key for key in item if key.endswith("_id"))
+                table.items[item[item_key]] = item
+                continue
             update = transaction["Update"]
             table = FAKE_TABLES[update["TableName"]]
             key = next(iter(update["Key"].values()))["S"]
             item = table.items[key]
             values = update["ExpressionAttributeValues"]
-            if update["TableName"] == "test-bookings" and ":status" in values:
+            if update["TableName"] == "test-payments":
+                item.update(status=values[":status"]["S"], updated_at=int(values[":updated"]["N"]))
+            elif update["TableName"] == "test-bookings" and ":booking_status" in values:
+                item.update(status=values[":booking_status"]["S"], payment_status=values[":payment_status"]["S"], updated_at=int(values[":updated"]["N"]))
+            elif update["TableName"] == "test-bookings" and ":status" in values:
                 item.update(status=values[":status"]["S"], resources_released_at=int(values[":updated"]["N"]), updated_at=int(values[":updated"]["N"]))
             elif update["TableName"] == "test-bookings":
                 item.update(status="ASSIGNED", vehicle_id=values[":vehicle"]["S"], chauffeur_id=values[":chauffeur"]["S"], updated_at=int(values[":updated"]["N"]))
@@ -558,6 +572,36 @@ class DemoHandlerTests(unittest.TestCase):
     def test_payment_webhook_rejects_invalid_signature(self):
         result = handler.lambda_handler(event("POST", "/webhooks/payments", {"event_id": "bad", "payment_id": "unknown", "status": "PAID"}, {"x-webhook-signature": "invalid"}), None)
         self.assertEqual(result["statusCode"], 401)
+
+    def test_failed_payment_transaction_leaves_all_records_unchanged(self):
+        booking_id = "10000000-0000-4000-8000-000000000001"
+        payment_id = "20000000-0000-4000-8000-000000000002"
+        FAKE_TABLES["test-bookings"].items[booking_id] = {"booking_id": booking_id, "status": "QUOTED", "payment_status": "PENDING"}
+        FAKE_TABLES["test-payments"].items[f"PAYMENT#{payment_id}"] = {
+            "record_id": f"PAYMENT#{payment_id}", "record_type": "PAYMENT", "payment_id": payment_id,
+            "booking_id": booking_id, "status": "PENDING", "amount_ngn": 100000, "created_at": 1,
+        }
+
+        class TransactionCancelled(Exception):
+            response = {"Error": {"Code": "TransactionCanceledException"}}
+
+        class FailingClient:
+            def transact_write_items(self, **_kwargs):
+                raise TransactionCancelled()
+
+        webhook = event("POST", "/webhooks/payments", {"event_id": "failed-atomic-event", "payment_id": payment_id, "status": "PAID"})
+        webhook["headers"] = {"x-webhook-signature": hmac.new(os.environ["PAYMENT_WEBHOOK_SECRET"].encode(), webhook["body"].encode(), hashlib.sha256).hexdigest()}
+        real_client = handler.DYNAMO_CLIENT
+        handler.DYNAMO_CLIENT = FailingClient()
+        try:
+            result = handler.lambda_handler(webhook, None)
+        finally:
+            handler.DYNAMO_CLIENT = real_client
+
+        self.assertEqual(result["statusCode"], 409)
+        self.assertEqual(FAKE_TABLES["test-payments"].items[f"PAYMENT#{payment_id}"]["status"], "PENDING")
+        self.assertEqual(FAKE_TABLES["test-bookings"].items[booking_id]["status"], "QUOTED")
+        self.assertNotIn("EVENT#failed-atomic-event", FAKE_TABLES["test-payments"].items)
 
     def test_admin_can_manage_chauffeur_availability(self):
         headers = {"x-admin-password": "test-admin-password"}

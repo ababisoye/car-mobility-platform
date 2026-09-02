@@ -22,6 +22,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Lets token-authenticated customers accept or decline only the latest unexpired quote
 - Queues booking, quote and assignment events in a provider-neutral notification outbox
 - Creates payment requests from approved quotes and verifies signed, idempotent payment webhooks
+- Applies payment, provider-event, booking and notification changes in one atomic DynamoDB transaction
 - Promotes immutable Lambda versions through a stable alias with a manual, OIDC-based rollback workflow
 - Emits privacy-conscious JSON logs with request correlation, latency and Lambda release metadata
 - Versions every DynamoDB record and provides an account-guarded, dry-run-first migration workflow
@@ -219,6 +220,8 @@ The dashboard authentication is deliberately small and cost-free: HTTPS carries 
 Notification events are stored but not sent in zero-funding mode. A later provider adapter can deliver them by email, SMS or WhatsApp without coupling booking logic to one vendor.
 
 Payment requests are also provider-neutral. A customer must first accept the latest quote with their one-time booking token; staff can then create a payment request at `POST /admin/bookings/{booking_id}/payments`. Customers can check `GET /bookings/{booking_id}/payment`, and a future provider posts signed status events to `POST /webhooks/payments`. Webhook event IDs are retained for 30 days so retries do not apply the same event twice. See [quote decisions](docs/quote-decisions.md).
+
+Each valid provider event changes the payment, records the event, updates the booking and queues its notification in one all-or-nothing transaction. See [payment consistency](docs/payment-consistency.md).
 
 Customer status, quote and payment endpoints require `x-booking-token`. Only a SHA-256 hash is stored, invalid credentials receive the same response as unknown bookings, and staff APIs never return the hash. See [customer booking access](docs/customer-access.md).
 
