@@ -57,6 +57,19 @@ BOOKING_TRANSITIONS = {
 }
 VEHICLE_STATUSES = {"AVAILABLE", "RESERVED", "ON_TRIP", "MAINTENANCE", "INACTIVE"}
 CHAUFFEUR_STATUSES = {"AVAILABLE", "ASSIGNED", "OFF_DUTY", "INACTIVE"}
+VEHICLE_MANUAL_TRANSITIONS = {
+    "AVAILABLE": {"MAINTENANCE", "INACTIVE"},
+    "MAINTENANCE": {"AVAILABLE", "INACTIVE"},
+    "INACTIVE": {"AVAILABLE", "MAINTENANCE"},
+    "RESERVED": set(),
+    "ON_TRIP": set(),
+}
+CHAUFFEUR_MANUAL_TRANSITIONS = {
+    "AVAILABLE": {"OFF_DUTY", "INACTIVE"},
+    "OFF_DUTY": {"AVAILABLE", "INACTIVE"},
+    "INACTIVE": {"AVAILABLE", "OFF_DUTY"},
+    "ASSIGNED": set(),
+}
 
 
 def response(status, body, content_type="application/json; charset=utf-8"):
@@ -462,7 +475,10 @@ def availability_records(event, table, id_field, record_type):
     if denied:
         return denied
     if method == "GET":
-        items = table.scan(Limit=100).get("Items", [])
+        items = [dict(item) for item in table.scan(Limit=100).get("Items", [])]
+        transitions = VEHICLE_MANUAL_TRANSITIONS if id_field == "vehicle_id" else CHAUFFEUR_MANUAL_TRANSITIONS
+        for item in items:
+            item["allowed_statuses"] = sorted(transitions.get(item.get("status"), set()))
         items.sort(key=lambda item: (item.get("hub", ""), item.get("name", "")))
         return response(200, {"items": items, "count": len(items)})
     try:
@@ -501,19 +517,28 @@ def update_availability(event, table, id_field, record_id, statuses):
     status = clean(data.get("status"), 20).upper()
     if status not in statuses:
         return response(400, {"error": "Select a valid availability status."})
+    current = table.get_item(Key={id_field: record_id}).get("Item")
+    if not current:
+        return response(404, {"error": "Availability record not found."})
+    transitions = VEHICLE_MANUAL_TRANSITIONS if id_field == "vehicle_id" else CHAUFFEUR_MANUAL_TRANSITIONS
+    if status not in transitions.get(current.get("status"), set()):
+        return response(409, {"error": f"Cannot manually move {current.get('status')} to {status}."})
     try:
         result = table.update_item(
             Key={id_field: record_id},
             UpdateExpression="SET #s = :status, updated_at = :updated",
-            ConditionExpression=f"attribute_exists({id_field})",
+            ConditionExpression=f"attribute_exists({id_field}) AND #s = :current_status",
             ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":status": status, ":updated": int(time.time())},
+            ExpressionAttributeValues={":status": status, ":current_status": current["status"], ":updated": int(time.time())},
             ReturnValues="ALL_NEW",
         )
     except Exception as error:
         error_response = getattr(error, "response", {})
         if error_response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return response(404, {"error": "Availability record not found."})
+            latest = table.get_item(Key={id_field: record_id}).get("Item")
+            if not latest:
+                return response(404, {"error": "Availability record not found."})
+            return response(409, {"error": "Availability changed concurrently; refresh and try again."})
         raise
     return response(200, result["Attributes"])
 
@@ -883,13 +908,13 @@ def admin_page():
 <section class="panel outbox"><h2>Notification outbox</h2><p class="muted">Delivery-ready events are stored here without contacting a paid provider.</p><div id="notifications" class="notification-list"></div></section></section></main>
 <script>
 const login=document.querySelector('#login'),dashboard=document.querySelector('#dashboard'),summary=document.querySelector('#summary'),cards=document.querySelector('#cards'),message=document.querySelector('#message'),password=document.querySelector('#password'),count=document.querySelector('#count'),vehicles=document.querySelector('#vehicles'),chauffeurs=document.querySelector('#chauffeurs'),notifications=document.querySelector('#notifications'),roleLabel=document.querySelector('#role');let currentRole='';
-const vehicleStatuses=['AVAILABLE','RESERVED','ON_TRIP','MAINTENANCE','INACTIVE'],chauffeurStatuses=['AVAILABLE','ASSIGNED','OFF_DUTY','INACTIVE'];
+
 function field(parent,text,cls=''){const node=document.createElement('div');node.textContent=text||'—';if(cls)node.className=cls;parent.append(node)}
 async function api(path,options={}){options.headers={...(options.headers||{}),'x-staff-password':password.value};const response=await fetch(path,options),data=await response.json();if(!response.ok)throw Error(data.error||'Request failed');return data}
 function choice(items,idField,label){const select=document.createElement('select'),placeholder=document.createElement('option');placeholder.value='';placeholder.textContent=label;select.append(placeholder);for(const item of items){const option=document.createElement('option');option.value=item[idField];option.textContent=item.name;select.append(option)}return select}
 function renderSummary(data){summary.replaceChildren();const metrics=[['Bookings',data.bookings.total],['Available vehicles',data.fleet.vehicles.by_status.AVAILABLE],['Available chauffeurs',data.fleet.chauffeurs.by_status.AVAILABLE],['Paid value','NGN '+Number(data.payments.paid_amount_ngn).toLocaleString()]];for(const [label,value] of metrics){const card=document.createElement('article');card.className='metric';const number=document.createElement('strong');number.textContent=value;const text=document.createElement('span');text.textContent=label;card.append(number,text);summary.append(card)}}
 function render(items,vehicleItems,chauffeurItems){cards.replaceChildren();count.textContent=items.length+' request'+(items.length===1?'':'s');for(const item of items){const card=document.createElement('article');card.className='card';const who=document.createElement('div');field(who,item.name,'name');field(who,item.phone);field(who,item.email);field(who,item.booking_id,'ref');const trip=document.createElement('div');field(trip,item.trip_type+' · '+item.hub,'name');field(trip,item.pickup+' → '+item.destination);field(trip,item.pickup_at+' → '+item.end_at);const vehicle=document.createElement('div');field(vehicle,item.vehicle_preference||'No vehicle preference','name');field(vehicle,item.notes||'No notes','muted');if(item.quote_version){field(vehicle,'Latest quote v'+item.quote_version+' · NGN '+Number(item.quote_amount_ngn).toLocaleString(),'name');field(vehicle,'Quote: '+(item.quote_status||'ISSUED')+' · Payment: '+(item.payment_status||'NOT REQUESTED'),'muted')}if(['REQUESTED','REVIEWING','QUOTED'].includes(item.status)){const quoteAmount=document.createElement('input'),quoteExpiry=document.createElement('input'),quoteNotes=document.createElement('input'),issueQuote=document.createElement('button');quoteAmount.type='number';quoteAmount.min='1';quoteAmount.placeholder='Amount in NGN';quoteAmount.setAttribute('aria-label','Quote amount in NGN');quoteExpiry.type='datetime-local';quoteExpiry.setAttribute('aria-label','Quote expiry');quoteNotes.placeholder='Quote notes';quoteNotes.setAttribute('aria-label','Quote notes');issueQuote.textContent=item.quote_version?'Issue revision':'Issue quote';issueQuote.addEventListener('click',async()=>{if(!quoteAmount.value||!quoteExpiry.value){message.textContent='Enter a quote amount and expiry.';return}issueQuote.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id)+'/quotes',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({amount_ngn:Number(quoteAmount.value),valid_until:quoteExpiry.value,notes:quoteNotes.value})});await load()}catch(error){message.textContent=error.message}finally{issueQuote.disabled=false}});vehicle.append(quoteAmount,quoteExpiry,quoteNotes,issueQuote)}if(item.status==='QUOTED'&&item.quote_status==='ACCEPTED'&&item.payment_status!=='PENDING'&&item.payment_status!=='PAID'){const requestPayment=document.createElement('button');requestPayment.textContent='Create payment request';requestPayment.addEventListener('click',async()=>{requestPayment.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id)+'/payments',{method:'POST',headers:{'content-type':'application/json'},body:'{}'});await load()}catch(error){message.textContent=error.message}finally{requestPayment.disabled=false}});vehicle.append(requestPayment)}const control=document.createElement('div'),select=document.createElement('select'),permitted=[item.status,...(item.allowed_transitions||[])];for(const status of permitted){const option=document.createElement('option');option.value=option.textContent=status;option.selected=status===item.status;select.append(option)}select.disabled=permitted.length===1;select.addEventListener('change',async()=>{select.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:select.value})});await load()}catch(error){message.textContent=error.message;await load()}});control.append(select);if(item.status==='CONFIRMED'&&!item.vehicle_id&&!item.chauffeur_id){const availableVehicles=vehicleItems.filter(resource=>resource.hub===item.hub&&resource.status==='AVAILABLE'),availableChauffeurs=chauffeurItems.filter(resource=>resource.hub===item.hub&&resource.status==='AVAILABLE'),vehicleChoice=choice(availableVehicles,'vehicle_id','Select vehicle'),chauffeurChoice=choice(availableChauffeurs,'chauffeur_id','Select chauffeur'),assign=document.createElement('button');assign.textContent='Assign';assign.addEventListener('click',async()=>{if(!vehicleChoice.value||!chauffeurChoice.value){message.textContent='Select both a vehicle and chauffeur.';return}assign.disabled=true;try{await api('/admin/bookings/'+encodeURIComponent(item.booking_id)+'/assignment',{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({vehicle_id:vehicleChoice.value,chauffeur_id:chauffeurChoice.value})});await load()}catch(error){message.textContent=error.message}finally{assign.disabled=false}});control.append(vehicleChoice,chauffeurChoice,assign)}else if(item.vehicle_id||item.chauffeur_id){field(control,'Resources assigned','name')}card.append(who,trip,vehicle,control);cards.append(card)}}
-function renderResources(target,items,type){target.replaceChildren();const idField=type==='vehicles'?'vehicle_id':'chauffeur_id',options=type==='vehicles'?vehicleStatuses:chauffeurStatuses;for(const item of items){const card=document.createElement('article');card.className='resource';const details=document.createElement('div');field(details,item.name,'name');field(details,item.hub+(item.category?' · '+item.category:'')+(item.ownership?' · '+item.ownership:''));const select=document.createElement('select');for(const status of options){const option=document.createElement('option');option.value=option.textContent=status;option.selected=status===item.status;select.append(option)}select.disabled=currentRole!=='ADMIN';select.addEventListener('change',async()=>{select.disabled=true;try{await api('/admin/'+type+'/'+encodeURIComponent(item[idField]),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:select.value})})}catch(error){message.textContent=error.message}finally{select.disabled=currentRole!=='ADMIN'}});card.append(details,select);target.append(card)}}
+function renderResources(target,items,type){target.replaceChildren();const idField=type==='vehicles'?'vehicle_id':'chauffeur_id';for(const item of items){const card=document.createElement('article');card.className='resource';const details=document.createElement('div');field(details,item.name,'name');field(details,item.hub+(item.category?' · '+item.category:'')+(item.ownership?' · '+item.ownership:''));const select=document.createElement('select');for(const status of [item.status,...(item.allowed_statuses||[])]){const option=document.createElement('option');option.value=option.textContent=status;option.selected=status===item.status;select.append(option)}select.disabled=currentRole!=='ADMIN'||!(item.allowed_statuses||[]).length;select.addEventListener('change',async()=>{select.disabled=true;try{await api('/admin/'+type+'/'+encodeURIComponent(item[idField]),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:select.value})});await load()}catch(error){await load();message.textContent=error.message}});card.append(details,select);target.append(card)}}
 function renderNotifications(items){notifications.replaceChildren();for(const item of items){const card=document.createElement('article');card.className='notification';const details=document.createElement('div');field(details,item.event_type.replaceAll('_',' '),'name');field(details,item.message);field(details,'Booking '+item.booking_id,'ref');const action=document.createElement('button');action.textContent=item.status==='PENDING'?'Mark processed':item.status;action.disabled=item.status!=='PENDING';action.addEventListener('click',async()=>{action.disabled=true;try{await api('/admin/notifications/'+encodeURIComponent(item.notification_id),{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({status:'PROCESSED'})});await load()}catch(error){message.textContent=error.message}});card.append(details,action);notifications.append(card)}}
 async function load(){message.textContent='';try{const [session,summaryData,bookingData,vehicleData,chauffeurData,notificationData]=await Promise.all([api('/admin/session'),api('/admin/summary'),api('/admin/bookings'),api('/admin/vehicles'),api('/admin/chauffeurs'),api('/admin/notifications')]);currentRole=session.role;roleLabel.textContent=currentRole==='ADMIN'?'Administrator · full fleet access':'Operator · fleet changes locked';document.querySelector('#vehicle-form').classList.toggle('hidden',currentRole!=='ADMIN');document.querySelector('#chauffeur-form').classList.toggle('hidden',currentRole!=='ADMIN');login.classList.add('hidden');dashboard.classList.remove('hidden');renderSummary(summaryData);render(bookingData.bookings,vehicleData.items,chauffeurData.items);renderResources(vehicles,vehicleData.items,'vehicles');renderResources(chauffeurs,chauffeurData.items,'chauffeurs');renderNotifications(notificationData.notifications)}catch(error){message.textContent=error.message}}
 async function createResource(event,type){event.preventDefault();const form=event.currentTarget,data=Object.fromEntries(new FormData(form));try{await api('/admin/'+type,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)});form.reset();await load()}catch(error){message.textContent=error.message}}

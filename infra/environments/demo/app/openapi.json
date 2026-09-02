@@ -80,7 +80,7 @@
     },
     "/admin/vehicles/{vehicle_id}": {
       "parameters": [{"name": "vehicle_id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
-      "patch": {"tags": ["Fleet"], "summary": "Change vehicle availability (administrator only)", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Vehicle updated"}, "403": {"$ref": "#/components/responses/Forbidden"}}}
+      "patch": {"tags": ["Fleet"], "summary": "Change manual vehicle availability (administrator only)", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Vehicle updated"}, "403": {"$ref": "#/components/responses/Forbidden"}, "409": {"$ref": "#/components/responses/Conflict"}}}
     },
     "/admin/chauffeurs": {
       "get": {"tags": ["Fleet"], "summary": "List chauffeurs", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Chauffeur list"}}},
@@ -88,7 +88,7 @@
     },
     "/admin/chauffeurs/{chauffeur_id}": {
       "parameters": [{"name": "chauffeur_id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
-      "patch": {"tags": ["Fleet"], "summary": "Change chauffeur availability (administrator only)", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Chauffeur updated"}, "403": {"$ref": "#/components/responses/Forbidden"}}}
+      "patch": {"tags": ["Fleet"], "summary": "Change manual chauffeur availability (administrator only)", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Chauffeur updated"}, "403": {"$ref": "#/components/responses/Forbidden"}, "409": {"$ref": "#/components/responses/Conflict"}}}
     },
     "/admin/notifications": {
       "get": {"tags": ["Operations"], "summary": "List notification outbox", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Notification events"}}}

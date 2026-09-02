@@ -40,6 +40,8 @@ class FakeTable:
             raise FakeConditionalCheckFailed()
         if ":pending" in ExpressionAttributeValues and item.get("status") != ExpressionAttributeValues[":pending"]:
             raise FakeConditionalCheckFailed()
+        if ":current_status" in ExpressionAttributeValues and item.get("status") != ExpressionAttributeValues[":current_status"]:
+            raise FakeConditionalCheckFailed()
         if ":status" in ExpressionAttributeValues:
             item["status"] = ExpressionAttributeValues[":status"]
         if ":role" in ExpressionAttributeValues:
@@ -498,6 +500,12 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertEqual(len(assignment_notifications), 1)
         vehicle_id = json.loads(vehicle["body"])["vehicle_id"]
         chauffeur_id = json.loads(chauffeur["body"])["chauffeur_id"]
+        manual_vehicle_release = handler.lambda_handler(event("PATCH", f"/admin/vehicles/{vehicle_id}", {"status": "AVAILABLE"}, headers), None)
+        manual_chauffeur_release = handler.lambda_handler(event("PATCH", f"/admin/chauffeurs/{chauffeur_id}", {"status": "AVAILABLE"}, headers), None)
+        self.assertEqual(manual_vehicle_release["statusCode"], 409)
+        self.assertEqual(manual_chauffeur_release["statusCode"], 409)
+        self.assertEqual(FAKE_TABLES["test-vehicles"].items[vehicle_id]["status"], "RESERVED")
+        self.assertEqual(FAKE_TABLES["test-chauffeurs"].items[chauffeur_id]["status"], "ASSIGNED")
         overlapping = handler.lambda_handler(
             event("POST", "/bookings", {"name": "Conflict Test", "phone": "+2348000000003", "hub": "Oyo", "trip_type": "Local", "pickup": "Dugbe", "destination": "Bodija", "pickup_at": "2026-10-01T10:00", "end_at": "2026-10-01T13:00"}),
             None,
@@ -651,6 +659,8 @@ class DemoHandlerTests(unittest.TestCase):
             None,
         )
         self.assertEqual(json.loads(updated["body"])["status"], "MAINTENANCE")
+        system_state = handler.lambda_handler(event("PATCH", f"/admin/vehicles/{vehicle_id}", {"status": "ON_TRIP"}, headers), None)
+        self.assertEqual(system_state["statusCode"], 409)
 
     def test_quotes_are_versioned_and_latest_is_public(self):
         headers = {"x-admin-password": "test-admin-password"}
@@ -859,6 +869,8 @@ class DemoHandlerTests(unittest.TestCase):
             None,
         )
         self.assertEqual(json.loads(updated["body"])["status"], "OFF_DUTY")
+        system_state = handler.lambda_handler(event("PATCH", f"/admin/chauffeurs/{chauffeur_id}", {"status": "ASSIGNED"}, headers), None)
+        self.assertEqual(system_state["statusCode"], 409)
 
 
 if __name__ == "__main__":
