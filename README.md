@@ -40,6 +40,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Publishes a versioned OpenAPI 3.1 contract with automated route and security checks
 - Automated Python tests plus Terraform formatting and validation in CI
 - Freezes application time in date-sensitive tests so CI remains reproducible
+- Isolates every application test with fresh in-memory DynamoDB tables
 - Enforces zero-funding service, capacity, concurrency, retention and IAM guardrails in CI
 - Pins third-party CI actions to immutable commits with least-privilege workflow tests
 - Documented a production growth path without forcing production cost on the MVP

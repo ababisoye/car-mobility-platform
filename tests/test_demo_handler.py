@@ -178,6 +178,8 @@ class DemoHandlerTests(unittest.TestCase):
     def setUp(self):
         self.real_log_event = handler.log_event
         self.real_current_datetime = handler.current_datetime
+        for table in FAKE_TABLES.values():
+            table.items.clear()
         handler.log_event = lambda *_args, **_kwargs: None
         handler.current_datetime = lambda tzinfo=None: datetime(2026, 9, 2, 12, 0, tzinfo=tzinfo)
 
