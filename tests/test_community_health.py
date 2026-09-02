@@ -25,6 +25,24 @@ class CommunityHealthTests(unittest.TestCase):
         self.assertIn("[security policy](SECURITY.md)", readme)
         self.assertIn("no open-source license", readme)
 
+    def test_architecture_decisions_explain_demo_tradeoffs(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        decisions = (ROOT / "docs/architecture-decisions.md").read_text(
+            encoding="utf-8"
+        )
+
+        self.assertIn(
+            "[architecture decisions](docs/architecture-decisions.md)", readme
+        )
+        for decision in (
+            "Why there is no NAT Gateway",
+            "Why there is no load balancer or API Gateway",
+            "Accepted demo limitations",
+            "Promotion conditions",
+        ):
+            with self.subTest(decision=decision):
+                self.assertIn(decision, decisions)
+
     def test_security_reports_are_directed_to_a_private_channel(self):
         security_policy = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
         issue_config = (
