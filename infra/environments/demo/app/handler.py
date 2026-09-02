@@ -10,6 +10,7 @@ import uuid
 from contextvars import ContextVar
 from decimal import Decimal
 from datetime import datetime
+from pathlib import Path
 
 import boto3
 
@@ -34,6 +35,7 @@ OPERATOR_PASSWORD_HASH = os.environ.get("OPERATOR_PASSWORD_HASH", "")
 PAYMENT_WEBHOOK_SECRET = os.environ.get("PAYMENT_WEBHOOK_SECRET", "")
 RELEASE_VERSION = os.environ.get("AWS_LAMBDA_FUNCTION_VERSION", "local")
 SCHEMA_VERSION = 1
+OPENAPI_TEXT = Path(__file__).with_name("openapi.json").read_text(encoding="utf-8")
 REQUEST_ID = ContextVar("request_id", default="unknown")
 ACTOR_ROLE = ContextVar("actor_role", default="PUBLIC")
 HUBS = {"Lagos", "Ogun", "Oyo", "Abuja"}
@@ -634,6 +636,8 @@ def route_request(event):
         return response(200, page(), "text/html; charset=utf-8")
     if method == "GET" and path == "/health":
         return response(200, {"status": "ok", "mode": "zero-funding-demo", "service": "luxury-rental-demo", "release_version": RELEASE_VERSION})
+    if method == "GET" and path == "/openapi.json":
+        return response(200, OPENAPI_TEXT, "application/json; charset=utf-8")
     if method == "GET" and path == "/admin":
         return response(200, admin_page(), "text/html; charset=utf-8")
     if method == "GET" and path == "/admin/session":

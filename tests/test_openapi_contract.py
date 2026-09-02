@@ -1,0 +1,49 @@
+import json
+import unittest
+from pathlib import Path
+
+
+SPEC_PATH = Path(__file__).parents[1] / "infra" / "environments" / "demo" / "app" / "openapi.json"
+
+
+class OpenApiContractTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.raw = SPEC_PATH.read_text(encoding="utf-8")
+        cls.spec = json.loads(cls.raw)
+
+    def test_contract_uses_openapi_31_and_has_unique_operation_pairs(self):
+        self.assertEqual(self.spec["openapi"], "3.1.0")
+        operations = [(method.upper(), path) for path, item in self.spec["paths"].items() for method in item if method in {"get", "post", "patch", "put", "delete"}]
+        self.assertEqual(len(operations), len(set(operations)))
+
+    def test_contract_covers_every_lambda_route(self):
+        expected = {
+            ("GET", "/"), ("GET", "/health"), ("GET", "/openapi.json"), ("POST", "/bookings"),
+            ("GET", "/bookings/{booking_id}"), ("GET", "/bookings/{booking_id}/quote"), ("GET", "/bookings/{booking_id}/payment"),
+            ("GET", "/admin"), ("GET", "/admin/session"), ("GET", "/admin/bookings"), ("PATCH", "/admin/bookings/{booking_id}"),
+            ("PATCH", "/admin/bookings/{booking_id}/assignment"), ("GET", "/admin/bookings/{booking_id}/quotes"), ("POST", "/admin/bookings/{booking_id}/quotes"),
+            ("GET", "/admin/bookings/{booking_id}/payments"), ("POST", "/admin/bookings/{booking_id}/payments"),
+            ("GET", "/admin/vehicles"), ("POST", "/admin/vehicles"), ("PATCH", "/admin/vehicles/{vehicle_id}"),
+            ("GET", "/admin/chauffeurs"), ("POST", "/admin/chauffeurs"), ("PATCH", "/admin/chauffeurs/{chauffeur_id}"),
+            ("GET", "/admin/notifications"), ("PATCH", "/admin/notifications/{notification_id}"), ("POST", "/webhooks/payments"),
+        }
+        documented = {(method.upper(), path) for path, item in self.spec["paths"].items() for method in item if method in {"get", "post", "patch", "put", "delete"}}
+        self.assertEqual(documented, expected)
+
+    def test_sensitive_routes_declare_the_correct_header_schemes(self):
+        schemes = self.spec["components"]["securitySchemes"]
+        self.assertEqual(schemes["bookingToken"]["name"], "x-booking-token")
+        self.assertEqual(schemes["staffPassword"]["name"], "x-staff-password")
+        self.assertEqual(schemes["webhookSignature"]["name"], "x-webhook-signature")
+        self.assertEqual(self.spec["paths"]["/bookings/{booking_id}"]["get"]["security"], [{"bookingToken": []}])
+        self.assertEqual(self.spec["paths"]["/admin/bookings"]["get"]["security"], [{"staffPassword": []}])
+        self.assertEqual(self.spec["paths"]["/webhooks/payments"]["post"]["security"], [{"webhookSignature": []}])
+
+    def test_contract_contains_no_example_credentials(self):
+        for forbidden in ("demo-admin", "demo-operator", "PAYMENT_WEBHOOK_SECRET", "AWS_RELEASE_ROLE_ARN"):
+            self.assertNotIn(forbidden, self.raw)
+
+
+if __name__ == "__main__":
+    unittest.main()

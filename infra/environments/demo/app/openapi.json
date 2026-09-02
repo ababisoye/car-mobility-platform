@@ -1,0 +1,130 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Luxury Chauffeur Booking Demo API",
+    "version": "1.0.0",
+    "description": "Provider-neutral API for chauffeur-driven bookings in Lagos, Ogun, Oyo and Abuja. This demo does not collect card details or identity documents."
+  },
+  "tags": [
+    {"name": "Public"},
+    {"name": "Customer"},
+    {"name": "Operations"},
+    {"name": "Fleet"},
+    {"name": "Providers"}
+  ],
+  "paths": {
+    "/": {
+      "get": {"tags": ["Public"], "summary": "Booking and customer-status page", "responses": {"200": {"description": "HTML page"}}}
+    },
+    "/health": {
+      "get": {"tags": ["Public"], "summary": "Health and active release metadata", "responses": {"200": {"description": "Service is healthy", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Health"}}}}}}
+    },
+    "/openapi.json": {
+      "get": {"tags": ["Public"], "summary": "This OpenAPI contract", "responses": {"200": {"description": "OpenAPI 3.1 document"}}}
+    },
+    "/bookings": {
+      "post": {
+        "tags": ["Public"], "summary": "Create a chauffeur booking request",
+        "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BookingRequest"}}}},
+        "responses": {"201": {"description": "Request created; access_token is returned only once", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BookingCreated"}}}}, "400": {"$ref": "#/components/responses/Error"}}
+      }
+    },
+    "/bookings/{booking_id}": {
+      "parameters": [{"$ref": "#/components/parameters/BookingId"}],
+      "get": {"tags": ["Customer"], "summary": "Read limited booking status", "security": [{"bookingToken": []}], "responses": {"200": {"description": "Booking status"}, "404": {"$ref": "#/components/responses/NotFound"}}}
+    },
+    "/bookings/{booking_id}/quote": {
+      "parameters": [{"$ref": "#/components/parameters/BookingId"}],
+      "get": {"tags": ["Customer"], "summary": "Read the latest quote", "security": [{"bookingToken": []}], "responses": {"200": {"description": "Latest quote"}, "404": {"$ref": "#/components/responses/NotFound"}}}
+    },
+    "/bookings/{booking_id}/payment": {
+      "parameters": [{"$ref": "#/components/parameters/BookingId"}],
+      "get": {"tags": ["Customer"], "summary": "Read the latest payment request", "security": [{"bookingToken": []}], "responses": {"200": {"description": "Latest payment status"}, "404": {"$ref": "#/components/responses/NotFound"}}}
+    },
+    "/admin": {
+      "get": {"tags": ["Public"], "summary": "Staff dashboard login page", "responses": {"200": {"description": "HTML page"}}}
+    },
+    "/admin/session": {
+      "get": {"tags": ["Operations"], "summary": "Resolve the current staff role", "security": [{"staffPassword": []}], "responses": {"200": {"description": "ADMIN or OPERATOR"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
+    },
+    "/admin/bookings": {
+      "get": {"tags": ["Operations"], "summary": "List booking requests", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Booking list"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
+    },
+    "/admin/bookings/{booking_id}": {
+      "parameters": [{"$ref": "#/components/parameters/BookingId"}],
+      "patch": {"tags": ["Operations"], "summary": "Update booking workflow status", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Updated booking"}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
+    },
+    "/admin/bookings/{booking_id}/assignment": {
+      "parameters": [{"$ref": "#/components/parameters/BookingId"}],
+      "patch": {"tags": ["Operations"], "summary": "Atomically assign a vehicle and chauffeur", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Resources assigned"}, "409": {"$ref": "#/components/responses/Conflict"}}}
+    },
+    "/admin/bookings/{booking_id}/quotes": {
+      "parameters": [{"$ref": "#/components/parameters/BookingId"}],
+      "get": {"tags": ["Operations"], "summary": "List immutable quote revisions", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Quote history"}}},
+      "post": {"tags": ["Operations"], "summary": "Issue a new quote revision", "security": [{"staffPassword": []}], "responses": {"201": {"description": "Quote issued"}, "400": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/admin/bookings/{booking_id}/payments": {
+      "parameters": [{"$ref": "#/components/parameters/BookingId"}],
+      "get": {"tags": ["Operations"], "summary": "List payment requests", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Payment history"}}},
+      "post": {"tags": ["Operations"], "summary": "Create a payment request from the latest valid quote", "security": [{"staffPassword": []}], "responses": {"201": {"description": "Payment request created"}, "409": {"$ref": "#/components/responses/Conflict"}}}
+    },
+    "/admin/vehicles": {
+      "get": {"tags": ["Fleet"], "summary": "List vehicles", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Vehicle list"}}},
+      "post": {"tags": ["Fleet"], "summary": "Create vehicle (administrator only)", "security": [{"staffPassword": []}], "responses": {"201": {"description": "Vehicle created"}, "403": {"$ref": "#/components/responses/Forbidden"}}}
+    },
+    "/admin/vehicles/{vehicle_id}": {
+      "parameters": [{"name": "vehicle_id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "patch": {"tags": ["Fleet"], "summary": "Change vehicle availability (administrator only)", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Vehicle updated"}, "403": {"$ref": "#/components/responses/Forbidden"}}}
+    },
+    "/admin/chauffeurs": {
+      "get": {"tags": ["Fleet"], "summary": "List chauffeurs", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Chauffeur list"}}},
+      "post": {"tags": ["Fleet"], "summary": "Create chauffeur (administrator only)", "security": [{"staffPassword": []}], "responses": {"201": {"description": "Chauffeur created"}, "403": {"$ref": "#/components/responses/Forbidden"}}}
+    },
+    "/admin/chauffeurs/{chauffeur_id}": {
+      "parameters": [{"name": "chauffeur_id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "patch": {"tags": ["Fleet"], "summary": "Change chauffeur availability (administrator only)", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Chauffeur updated"}, "403": {"$ref": "#/components/responses/Forbidden"}}}
+    },
+    "/admin/notifications": {
+      "get": {"tags": ["Operations"], "summary": "List notification outbox", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Notification events"}}}
+    },
+    "/admin/notifications/{notification_id}": {
+      "parameters": [{"name": "notification_id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
+      "patch": {"tags": ["Operations"], "summary": "Mark an outbox event processed or dismissed", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Notification updated"}}}
+    },
+    "/webhooks/payments": {
+      "post": {"tags": ["Providers"], "summary": "Apply a signed, idempotent payment event", "security": [{"webhookSignature": []}], "responses": {"200": {"description": "Event applied or duplicate acknowledged"}, "401": {"$ref": "#/components/responses/Unauthorized"}, "409": {"$ref": "#/components/responses/Conflict"}}}
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bookingToken": {"type": "apiKey", "in": "header", "name": "x-booking-token", "description": "One-time customer token returned when the booking is created."},
+      "staffPassword": {"type": "apiKey", "in": "header", "name": "x-staff-password", "description": "Zero-funding demo credential. Replace with managed identity and MFA in production."},
+      "webhookSignature": {"type": "apiKey", "in": "header", "name": "x-webhook-signature", "description": "Lowercase hexadecimal HMAC-SHA256 of the exact request body."}
+    },
+    "parameters": {
+      "BookingId": {"name": "booking_id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+    },
+    "responses": {
+      "Error": {"description": "Invalid request", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Unauthorized": {"description": "Credential missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Forbidden": {"description": "Authenticated role lacks permission", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "NotFound": {"description": "Resource or valid customer credential not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "Conflict": {"description": "Current workflow state prevents the operation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+    },
+    "schemas": {
+      "Error": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}},
+      "Health": {"type": "object", "required": ["status", "mode", "service", "release_version"], "properties": {"status": {"const": "ok"}, "mode": {"const": "zero-funding-demo"}, "service": {"type": "string"}, "release_version": {"type": "string"}}},
+      "BookingRequest": {
+        "type": "object",
+        "required": ["name", "phone", "hub", "trip_type", "pickup", "destination", "pickup_at", "end_at"],
+        "properties": {
+          "name": {"type": "string", "maxLength": 100}, "phone": {"type": "string", "maxLength": 30}, "email": {"type": "string", "format": "email", "maxLength": 150},
+          "hub": {"enum": ["Lagos", "Ogun", "Oyo", "Abuja"]}, "trip_type": {"enum": ["Local", "Interstate"]},
+          "pickup": {"type": "string", "maxLength": 200}, "destination": {"type": "string", "maxLength": 200},
+          "pickup_at": {"type": "string"}, "end_at": {"type": "string"}, "vehicle_preference": {"type": "string", "maxLength": 100}, "notes": {"type": "string", "maxLength": 500}
+        }
+      },
+      "BookingCreated": {"type": "object", "required": ["booking_id", "access_token", "status", "message"], "properties": {"booking_id": {"type": "string", "format": "uuid"}, "access_token": {"type": "string", "writeOnly": true}, "status": {"const": "REQUESTED"}, "message": {"type": "string"}}}
+    }
+  }
+}

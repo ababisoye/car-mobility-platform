@@ -25,6 +25,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Separates administrator and operator permissions with matching server-side and dashboard controls
 - Protects customer booking, quote and payment lookups with one-time access tokens stored only as hashes
 - Provides a customer self-service panel for booking, quotation and payment status
+- Publishes a versioned OpenAPI 3.1 contract with automated route and security checks
 - Automated Python tests plus Terraform formatting and validation in CI
 - Documented a production growth path without forcing production cost on the MVP
 
@@ -82,6 +83,8 @@ The recommended starting point is `infra/environments/demo`. It replaces all alw
 - A USD 1 actual and forecast budget notification
 
 The function serves the mobile booking form and its small API from one deployment. It is a demonstration, not a production rental platform. It records simulated payment state but deliberately does not collect card details, transfer money or collect identity documents.
+
+The machine-readable API contract is stored at `infra/environments/demo/app/openapi.json` and served by the demo at `GET /openapi.json`. Tests verify that every routed operation is documented and that customer, staff and webhook endpoints declare their expected header security scheme.
 
 AWS Budgets only sends alerts; it is not a hard spending cap. A new AWS Free account plan prevents charges while the plan is active, but it ends after six months or when credits are exhausted. Keep a local export of anything important.
 

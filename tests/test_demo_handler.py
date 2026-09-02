@@ -169,6 +169,13 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertEqual(payload["service"], "luxury-rental-demo")
         self.assertEqual(payload["release_version"], "local")
 
+    def test_openapi_contract_is_served(self):
+        result = handler.lambda_handler(event("GET", "/openapi.json"), None)
+        payload = json.loads(result["body"])
+        self.assertEqual(result["statusCode"], 200)
+        self.assertEqual(result["headers"]["content-type"], "application/json; charset=utf-8")
+        self.assertEqual(payload["info"]["title"], "Luxury Chauffeur Booking Demo API")
+
     def test_booking_can_be_created_and_checked(self):
         request = {
             "name": "Demo Customer",
