@@ -16,7 +16,7 @@ Operational guards supplement the transition graph:
 
 - issuing a quote is limited to request, review and quoted stages;
 - confirmation requires an accepted quote or a confirmed payment;
-- fleet assignment requires a confirmed booking and uses a DynamoDB condition that checks that state again;
+- fleet assignment requires a confirmed booking and atomically reserves its vehicle and chauffeur while queuing the customer notification;
 - payment requests require the latest accepted quote and a quoted booking;
 - assignment is the only operation that enters `ASSIGNED`;
 - completion requires an assigned trip that first entered `IN_PROGRESS`;

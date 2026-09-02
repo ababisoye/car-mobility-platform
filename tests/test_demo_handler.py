@@ -466,6 +466,11 @@ class DemoHandlerTests(unittest.TestCase):
         )
         self.assertEqual(assigned["statusCode"], 200)
         self.assertEqual(json.loads(assigned["body"])["status"], "ASSIGNED")
+        assignment_notifications = [
+            item for item in FAKE_TABLES["test-notifications"].items.values()
+            if item.get("booking_id") == booking_body["booking_id"] and item.get("event_type") == "RESOURCES_ASSIGNED"
+        ]
+        self.assertEqual(len(assignment_notifications), 1)
         vehicle_id = json.loads(vehicle["body"])["vehicle_id"]
         chauffeur_id = json.loads(chauffeur["body"])["chauffeur_id"]
         overlapping = handler.lambda_handler(
@@ -507,6 +512,37 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertEqual(json.loads(completed["body"])["status"], "COMPLETED")
         self.assertEqual(FAKE_TABLES["test-vehicles"].items[vehicle_id]["status"], "AVAILABLE")
         self.assertEqual(FAKE_TABLES["test-chauffeurs"].items[chauffeur_id]["status"], "AVAILABLE")
+
+    def test_failed_assignment_transaction_changes_nothing(self):
+        booking_id = "40000000-0000-4000-8000-000000000004"
+        vehicle_id = "50000000-0000-4000-8000-000000000005"
+        chauffeur_id = "60000000-0000-4000-8000-000000000006"
+        FAKE_TABLES["test-bookings"].items[booking_id] = {
+            "booking_id": booking_id, "status": "CONFIRMED", "hub": "Lagos",
+            "pickup_at": "2027-06-01T09:00", "end_at": "2027-06-01T12:00",
+        }
+        FAKE_TABLES["test-vehicles"].items[vehicle_id] = {"vehicle_id": vehicle_id, "status": "AVAILABLE", "hub": "Lagos"}
+        FAKE_TABLES["test-chauffeurs"].items[chauffeur_id] = {"chauffeur_id": chauffeur_id, "status": "AVAILABLE", "hub": "Lagos"}
+
+        class TransactionCancelled(Exception):
+            response = {"Error": {"Code": "TransactionCanceledException"}}
+
+        class FailingClient:
+            def transact_write_items(self, **_kwargs):
+                raise TransactionCancelled()
+
+        notifications_before = set(FAKE_TABLES["test-notifications"].items)
+        real_client = handler.DYNAMO_CLIENT
+        handler.DYNAMO_CLIENT = FailingClient()
+        try:
+            result = handler.lambda_handler(event("PATCH", f"/admin/bookings/{booking_id}/assignment", {"vehicle_id": vehicle_id, "chauffeur_id": chauffeur_id}, {"x-admin-password": "test-admin-password"}), None)
+        finally:
+            handler.DYNAMO_CLIENT = real_client
+        self.assertEqual(result["statusCode"], 409)
+        self.assertEqual(FAKE_TABLES["test-bookings"].items[booking_id]["status"], "CONFIRMED")
+        self.assertEqual(FAKE_TABLES["test-vehicles"].items[vehicle_id]["status"], "AVAILABLE")
+        self.assertEqual(FAKE_TABLES["test-chauffeurs"].items[chauffeur_id]["status"], "AVAILABLE")
+        self.assertEqual(set(FAKE_TABLES["test-notifications"].items), notifications_before)
 
     def test_admin_can_manage_vehicle_availability(self):
         headers = {"x-admin-password": "test-admin-password"}

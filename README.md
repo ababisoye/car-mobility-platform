@@ -14,7 +14,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Added booking validation, short-lived demo records and security headers
 - Added a password-protected operations view for booking review and status updates
 - Added vehicle and chauffeur availability management across all four hubs
-- Added atomic booking assignment that reserves a vehicle and chauffeur together
+- Added atomic booking assignment that reserves a vehicle and chauffeur and queues its notification together
 - Rejects unavailable, wrong-hub and overlapping resource assignments
 - Atomically releases assigned fleet resources when trips complete or bookings terminate
 - Enforces an explicit booking state machine and exposes only valid dashboard transitions
@@ -64,7 +64,7 @@ flowchart LR
 
 The zero-funding path deliberately omits API Gateway, a load balancer, NAT Gateway, containers and RDS. The reusable production foundation remains available for a later, funded phase.
 
-Assignment uses a DynamoDB transaction to change the booking, vehicle and chauffeur together. A concurrent request fails instead of partially assigning or double-reserving a resource.
+Assignment uses a DynamoDB transaction to change the booking, vehicle and chauffeur and queue the customer notification together. A concurrent request fails instead of partially assigning, double-reserving a resource or losing its notification.
 
 ## Booking interface
 

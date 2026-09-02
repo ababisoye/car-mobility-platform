@@ -535,12 +535,14 @@ def assign_booking(event, booking_id):
         if same_resource and all(existing.get(field) for field in ("pickup_at", "end_at")) and intervals_overlap(booking, existing):
             return response(409, {"error": "Vehicle or chauffeur has an overlapping assignment."})
     now = str(int(time.time()))
+    notification = notification_record(booking_id, "RESOURCES_ASSIGNED", "A vehicle and chauffeur have been assigned to your booking.")
     try:
         DYNAMO_CLIENT.transact_write_items(
             TransactItems=[
                 {"Update": {"TableName": BOOKINGS_TABLE_NAME, "Key": {"booking_id": {"S": booking_id}}, "UpdateExpression": "SET #s = :assigned, vehicle_id = :vehicle, chauffeur_id = :chauffeur, updated_at = :updated", "ConditionExpression": "attribute_exists(booking_id) AND #s = :confirmed", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":assigned": {"S": "ASSIGNED"}, ":confirmed": {"S": "CONFIRMED"}, ":vehicle": {"S": vehicle_id}, ":chauffeur": {"S": chauffeur_id}, ":updated": {"N": now}}}},
                 {"Update": {"TableName": VEHICLES_TABLE_NAME, "Key": {"vehicle_id": {"S": vehicle_id}}, "UpdateExpression": "SET #s = :reserved, updated_at = :updated", "ConditionExpression": "#s = :available", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":reserved": {"S": "RESERVED"}, ":available": {"S": "AVAILABLE"}, ":updated": {"N": now}}}},
                 {"Update": {"TableName": CHAUFFEURS_TABLE_NAME, "Key": {"chauffeur_id": {"S": chauffeur_id}}, "UpdateExpression": "SET #s = :assigned, updated_at = :updated", "ConditionExpression": "#s = :available", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":assigned": {"S": "ASSIGNED"}, ":available": {"S": "AVAILABLE"}, ":updated": {"N": now}}}},
+                {"Put": {"TableName": NOTIFICATIONS_TABLE_NAME, "Item": dynamodb_item(notification), "ConditionExpression": "attribute_not_exists(notification_id)"}},
             ]
         )
     except Exception as error:
@@ -548,7 +550,6 @@ def assign_booking(event, booking_id):
         if error_response.get("Error", {}).get("Code") == "TransactionCanceledException":
             return response(409, {"error": "Assignment changed concurrently; refresh and try again."})
         raise
-    queue_notification(booking_id, "RESOURCES_ASSIGNED", "A vehicle and chauffeur have been assigned to your booking.")
     log_event("resources_assigned", booking_id=booking_id, vehicle_id=vehicle_id, chauffeur_id=chauffeur_id)
     return response(200, {"booking_id": booking_id, "status": "ASSIGNED", "vehicle_id": vehicle_id, "chauffeur_id": chauffeur_id})
 
