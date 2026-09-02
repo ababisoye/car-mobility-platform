@@ -69,6 +69,26 @@ class CommunityHealthTests(unittest.TestCase):
             with self.subTest(threat=threat):
                 self.assertIn(f"| {threat} |", threat_model)
 
+    def test_portfolio_walkthrough_is_linked_and_sets_safe_boundaries(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        walkthrough = (ROOT / "docs/demo-walkthrough.md").read_text(encoding="utf-8")
+
+        self.assertIn(
+            "[five-minute portfolio walkthrough](docs/demo-walkthrough.md)", readme
+        )
+        for section in (
+            "Start the demonstration",
+            "Demonstrate the customer journey",
+            "Demonstrate operations",
+            "Explain the engineering decisions",
+            "Be explicit about limitations",
+            "Stop and reset",
+        ):
+            with self.subTest(section=section):
+                self.assertIn(f"## {section}", walkthrough)
+        self.assertIn("requires no AWS account", walkthrough)
+        self.assertIn("synthetic data", walkthrough)
+
     def test_security_reports_are_directed_to_a_private_channel(self):
         security_policy = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
         issue_config = (

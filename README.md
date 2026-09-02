@@ -99,6 +99,8 @@ Then open `http://127.0.0.1:8080`. Local preview bookings are held in memory and
 
 The local operations dashboard is at `http://127.0.0.1:8080/admin`; its preview-only password is printed by the script.
 
+Use the [five-minute portfolio walkthrough](docs/demo-walkthrough.md) to demonstrate the customer-to-operations lifecycle and explain the architecture during interviews without deploying to AWS.
+
 ## Zero-funding mode
 
 The recommended starting point is `infra/environments/demo`. It replaces all always-running infrastructure with:
