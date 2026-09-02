@@ -44,6 +44,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Isolates every application test with fresh in-memory DynamoDB tables
 - Enforces zero-funding service, capacity, concurrency, retention and IAM guardrails in CI
 - Pins third-party CI actions to immutable commits with least-privilege workflow tests
+- Blocks common secrets and sensitive deployment artifacts from the public repository in CI
 - Documented a production growth path without forcing production cost on the MVP
 
 ## Architecture
@@ -110,6 +111,8 @@ AWS Budgets only sends alerts; it is not a hard spending cap. A new AWS Free acc
 CI also evaluates the [zero-funding architecture policy](docs/zero-funding-policy.md). Unreviewed service types, additional DynamoDB tables, higher capacity, larger Lambda limits, longer log retention or wildcard IAM permissions fail the test suite before merge.
 
 External GitHub Actions are pinned to full commit SHAs, workflow permissions are tested, and Dependabot proposes weekly Actions and Terraform updates. See [CI/CD supply-chain controls](docs/ci-supply-chain.md).
+
+CI also inspects Git-tracked files for high-confidence credential patterns and rejects Terraform state, real variable files, private keys and deployment packages. See [public repository hygiene](docs/repository-hygiene.md).
 
 ## Current scope
 
