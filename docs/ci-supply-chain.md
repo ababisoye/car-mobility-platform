@@ -15,6 +15,8 @@ Dependabot checks GitHub Actions and all five Terraform roots weekly. Its pull r
 
 The test suite discovers every Terraform directory containing both `versions.tf` and `providers.tf`. It requires each root to appear in the GitHub Actions validation matrix and the local verification helper, preventing a new deployable root from silently bypassing validation.
 
+Validation runs for every pull request and every push to `main`, without path filters. This ensures policy-only changes, GitHub templates and other repository metadata cannot bypass tests merely because no application or Terraform file changed. A regression test rejects both `paths` and `paths-ignore` filters in the validation workflow.
+
 ## Updating a pin
 
 Review the upstream release notes and repository ownership, confirm the tag's commit through the official GitHub repository, update the SHA and version comment, and let CI validate the change. The controlled release environment remains a separate manual approval boundary.

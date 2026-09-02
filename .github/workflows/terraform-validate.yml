@@ -2,22 +2,8 @@ name: Terraform validation
 
 on:
   pull_request:
-    paths:
-      - "infra/**"
-      - "scripts/**"
-      - "tests/**"
-      - "docs/**"
-      - "README.md"
-      - ".github/workflows/**"
   push:
     branches: [main]
-    paths:
-      - "infra/**"
-      - "scripts/**"
-      - "tests/**"
-      - "docs/**"
-      - "README.md"
-      - ".github/workflows/**"
 
 permissions:
   contents: read

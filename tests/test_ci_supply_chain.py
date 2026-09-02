@@ -29,6 +29,14 @@ class CiSupplyChainTests(unittest.TestCase):
         self.assertEqual(release.count("id-token: write"), 1)
         self.assertRegex(release, r"(?s)release:\s+.*?permissions:\s+contents:\s+read\s+id-token:\s+write")
 
+    def test_validation_cannot_be_bypassed_by_changed_file_paths(self):
+        validation = self.workflows["terraform-validate.yml"]
+
+        self.assertRegex(validation, r"(?m)^\s+pull_request:\s*$")
+        self.assertRegex(validation, r"(?m)^\s+push:\s*$")
+        self.assertRegex(validation, r"(?m)^\s+branches:\s+\[main\]\s*$")
+        self.assertNotRegex(validation, r"(?m)^\s+paths(?:-ignore)?:")
+
 
 if __name__ == "__main__":
     unittest.main()
