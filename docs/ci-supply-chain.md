@@ -13,6 +13,8 @@ Every external GitHub Action is pinned to a full 40-character commit SHA. A near
 
 Dependabot checks GitHub Actions and all five Terraform roots weekly. Its pull requests still pass through the same test and Terraform validation workflow; updates are never deployed automatically.
 
+The test suite discovers every Terraform directory containing both `versions.tf` and `providers.tf`. It requires each root to appear in the GitHub Actions validation matrix and the local verification helper, preventing a new deployable root from silently bypassing validation.
+
 ## Updating a pin
 
 Review the upstream release notes and repository ownership, confirm the tag's commit through the official GitHub repository, update the SHA and version comment, and let CI validate the change. The controlled release environment remains a separate manual approval boundary.
