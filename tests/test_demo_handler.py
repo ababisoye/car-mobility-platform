@@ -142,6 +142,8 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertEqual(result["statusCode"], 200)
         self.assertIn("Request a quote", result["body"])
         self.assertIn(r"Request recorded.\nReference", result["body"])
+        self.assertIn("Check my booking", result["body"])
+        self.assertIn("x-booking-token", result["body"])
 
     def test_requests_have_structured_safe_correlation_logs(self):
         request = event("POST", "/bookings", {"name": "Do Not Log This Name", "phone": "+2348111111111", "hub": "Lagos", "trip_type": "Local", "pickup": "Ikoyi", "destination": "Airport", "pickup_at": "2027-05-01T09:00", "end_at": "2027-05-01T12:00"})

@@ -16,6 +16,8 @@ Missing and incorrect credentials both receive the same `404` response. This avo
 
 The booking page displays the reference and access token after submission. The customer must save both. The zero-funding demo intentionally has no email/SMS recovery channel because that would require a delivery provider.
 
+The same page provides a **Check my booking** form. It sends both values in request headers, never in the URL, and displays the booking workflow status plus the latest quote and payment state when available. The token input uses password masking and is not written to browser storage.
+
 ## Handling rules
 
 - Never place the token in a URL, query string, analytics event or log message.

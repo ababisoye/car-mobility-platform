@@ -24,6 +24,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Versions every DynamoDB record and provides an account-guarded, dry-run-first migration workflow
 - Separates administrator and operator permissions with matching server-side and dashboard controls
 - Protects customer booking, quote and payment lookups with one-time access tokens stored only as hashes
+- Provides a customer self-service panel for booking, quotation and payment status
 - Automated Python tests plus Terraform formatting and validation in CI
 - Documented a production growth path without forcing production cost on the MVP
 
