@@ -27,6 +27,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Versions every DynamoDB record and provides an account-guarded, dry-run-first migration workflow
 - Separates administrator and operator permissions with matching server-side and dashboard controls
 - Protects customer booking, quote and payment lookups with one-time access tokens stored only as hashes
+- Makes browser booking retries duplicate-safe without storing plaintext customer tokens
 - Provides a customer self-service panel for booking, quotation and payment status
 - Provides privacy-safe operational summaries for pipeline, fleet and payment visibility
 - Publishes a versioned OpenAPI 3.1 contract with automated route and security checks
@@ -220,6 +221,8 @@ Notification events are stored but not sent in zero-funding mode. A later provid
 Payment requests are also provider-neutral. A customer must first accept the latest quote with their one-time booking token; staff can then create a payment request at `POST /admin/bookings/{booking_id}/payments`. Customers can check `GET /bookings/{booking_id}/payment`, and a future provider posts signed status events to `POST /webhooks/payments`. Webhook event IDs are retained for 30 days so retries do not apply the same event twice. See [quote decisions](docs/quote-decisions.md).
 
 Customer status, quote and payment endpoints require `x-booking-token`. Only a SHA-256 hash is stored, invalid credentials receive the same response as unknown bookings, and staff APIs never return the hash. See [customer booking access](docs/customer-access.md).
+
+The browser also sends a random idempotency key and client-generated booking token. Retrying the same validated request returns its original reference without creating another booking or notification; conflicting reuse is rejected. See [duplicate-safe booking submission](docs/booking-idempotency.md).
 
 Unpaid customers can cancel online before a trip starts. Cancellation and staff completion release an assigned vehicle and chauffeur in the same DynamoDB transaction as the booking update, making those resources safely available for another trip. Paid cancellations require operations review because refunds are provider-dependent. See [booking lifecycle](docs/booking-lifecycle.md).
 

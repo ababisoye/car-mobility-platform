@@ -36,6 +36,8 @@ PAYMENT_WEBHOOK_SECRET = os.environ.get("PAYMENT_WEBHOOK_SECRET", "")
 RELEASE_VERSION = os.environ.get("AWS_LAMBDA_FUNCTION_VERSION", "local")
 SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 16_384
+MAX_IDEMPOTENCY_KEY_LENGTH = 200
+IDEMPOTENCY_NAMESPACE = uuid.UUID("79a04631-d896-4ef0-8874-932ead4f4588")
 OPENAPI_TEXT = Path(__file__).with_name("openapi.json").read_text(encoding="utf-8")
 REQUEST_ID = ContextVar("request_id", default="unknown")
 ACTOR_ROLE = ContextVar("actor_role", default="PUBLIC")
@@ -103,6 +105,11 @@ def valid_uuid(value):
 def booking_access_token(event):
     headers = {str(key).lower(): value for key, value in (event.get("headers") or {}).items()}
     return clean(headers.get("x-booking-token"), 200)
+
+
+def request_header(event, name):
+    headers = {str(key).lower(): value for key, value in (event.get("headers") or {}).items()}
+    return clean(headers.get(name.lower()), MAX_IDEMPOTENCY_KEY_LENGTH)
 
 
 def booking_access_allowed(event, booking):
@@ -177,8 +184,20 @@ def create_booking(event):
         return response(400, {"error": "Provide valid pickup and expected end times."})
 
     now = int(time.time())
-    booking_id = str(uuid.uuid4())
-    access_token = secrets.token_urlsafe(32)
+    idempotency_key = request_header(event, "x-idempotency-key")
+    supplied_token = booking_access_token(event)
+    if idempotency_key and (len(idempotency_key) < 16 or len(supplied_token) < 32):
+        return response(400, {"error": "Idempotent booking requests require a key of at least 16 characters and a customer token of at least 32 characters."})
+    idempotency_hash = hashlib.sha256(idempotency_key.encode("utf-8")).hexdigest() if idempotency_key else ""
+    request_fingerprint = hashlib.sha256(json.dumps(booking, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+    booking_id = str(uuid.uuid5(IDEMPOTENCY_NAMESPACE, idempotency_hash)) if idempotency_key else str(uuid.uuid4())
+    access_token = supplied_token if idempotency_key else secrets.token_urlsafe(32)
+    if idempotency_key:
+        existing = TABLE.get_item(Key={"booking_id": booking_id}).get("Item")
+        if existing:
+            if existing.get("request_fingerprint") != request_fingerprint or not booking_access_allowed(event, existing):
+                return response(409, {"error": "This idempotency key is already associated with another booking request."})
+            return response(200, {"booking_id": booking_id, "access_token": access_token, "status": existing["status"], "message": "The original booking request was returned; no duplicate was created.", "duplicate": True})
     item = {
         "schema_version": SCHEMA_VERSION,
         "booking_id": booking_id,
@@ -188,7 +207,18 @@ def create_booking(event):
         "customer_token_hash": hashlib.sha256(access_token.encode("utf-8")).hexdigest(),
         **booking,
     }
-    TABLE.put_item(Item=item, ConditionExpression="attribute_not_exists(booking_id)")
+    if idempotency_key:
+        item.update(idempotency_hash=idempotency_hash, request_fingerprint=request_fingerprint)
+    try:
+        TABLE.put_item(Item=item, ConditionExpression="attribute_not_exists(booking_id)")
+    except Exception as error:
+        error_response = getattr(error, "response", {})
+        if error_response.get("Error", {}).get("Code") != "ConditionalCheckFailedException" or not idempotency_key:
+            raise
+        existing = TABLE.get_item(Key={"booking_id": booking_id}).get("Item")
+        if not existing or existing.get("request_fingerprint") != request_fingerprint or not booking_access_allowed(event, existing):
+            return response(409, {"error": "This idempotency key is already associated with another booking request."})
+        return response(200, {"booking_id": booking_id, "access_token": access_token, "status": existing["status"], "message": "The original booking request was returned; no duplicate was created.", "duplicate": True})
     queue_notification(booking_id, "BOOKING_REQUESTED", "Your booking request was received and is awaiting review.")
     log_event("booking_created", booking_id=booking_id, hub=booking["hub"], trip_type=booking["trip_type"])
     return response(201, {"booking_id": booking_id, "access_token": access_token, "status": "REQUESTED", "message": "Your demo request has been recorded. Save the access token; it is shown only once."})
@@ -293,7 +323,8 @@ def list_bookings(event):
     if denied:
         return denied
     result = TABLE.scan(Limit=50)
-    items = [{key: value for key, value in item.items() if key != "customer_token_hash"} for item in result.get("Items", [])]
+    private_fields = {"customer_token_hash", "idempotency_hash", "request_fingerprint"}
+    items = [{key: value for key, value in item.items() if key not in private_fields} for item in result.get("Items", [])]
     for item in items:
         item["allowed_transitions"] = sorted(BOOKING_TRANSITIONS.get(item.get("status"), set()))
     items.sort(key=lambda item: item.get("created_at", 0), reverse=True)
@@ -784,7 +815,7 @@ def page():
 <div class="full"><button id="submit" type="submit">Request a quote</button></div></div></form><div id="result" class="result" role="status"></div>
 <p class="fine">Requests are automatically deleted after 30 days. Do not submit identity documents, payment details or sensitive personal information.</p>
 <section class="lookup"><div class="eyebrow">Customer access</div><h2>Check my booking</h2><p class="lead">Use the reference and private token shown when the request was created.</p><form id="lookup" class="lookup-grid"><label>Booking reference<input id="lookup-reference" required autocomplete="off"></label><label>Access token<input id="lookup-token" type="password" required autocomplete="off"></label><button id="lookup-submit" type="submit">Check status</button></form><div id="lookup-result" class="result" role="status"></div><div id="quote-actions" class="decision-actions"><button id="accept-quote" type="button">Accept latest quote</button><button id="decline-quote" class="decline" type="button">Decline latest quote</button></div><div id="booking-actions" class="decision-actions"><button id="cancel-booking" class="decline" type="button">Cancel booking</button></div></section></main>
-<script>const f=document.querySelector('#booking'),b=document.querySelector('#submit'),r=document.querySelector('#result'),lookup=document.querySelector('#lookup'),lookupButton=document.querySelector('#lookup-submit'),lookupResult=document.querySelector('#lookup-result'),reference=document.querySelector('#lookup-reference'),token=document.querySelector('#lookup-token'),quoteActions=document.querySelector('#quote-actions'),bookingActions=document.querySelector('#booking-actions'),acceptQuote=document.querySelector('#accept-quote'),declineQuote=document.querySelector('#decline-quote'),cancelBooking=document.querySelector('#cancel-booking');let currentCustomer=null;f.addEventListener('submit',async e=>{e.preventDefault();b.disabled=true;r.style.display='block';r.textContent='Submitting…';const data=Object.fromEntries(new FormData(f));try{const x=await fetch('/bookings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)}),j=await x.json();if(!x.ok)throw Error(j.error||'Request failed');r.textContent='Request recorded.\\nReference: '+j.booking_id+'\\nAccess token (save now): '+j.access_token;reference.value=j.booking_id;token.value=j.access_token;f.reset()}catch(err){r.textContent=err.message}finally{b.disabled=false}});async function customerRequest(path,headers,optional=false,options={}){const response=await fetch(path,{...options,headers:{...headers,...(options.headers||{})}}),data=await response.json();if(optional&&response.status===404)return null;if(!response.ok)throw Error(data.error||'Request failed');return data}lookup.addEventListener('submit',async e=>{e.preventDefault();lookupButton.disabled=true;quoteActions.classList.remove('visible');bookingActions.classList.remove('visible');lookupResult.style.display='block';lookupResult.textContent='Checking…';const id=reference.value.trim(),headers={'x-booking-token':token.value};try{const status=await customerRequest('/bookings/'+encodeURIComponent(id),headers),[quote,payment]=await Promise.all([customerRequest('/bookings/'+encodeURIComponent(id)+'/quote',headers,true),customerRequest('/bookings/'+encodeURIComponent(id)+'/payment',headers,true)]),lines=['Booking status: '+status.status,quote?'Latest quote: NGN '+Number(quote.amount_ngn).toLocaleString()+' · '+quote.status:'Latest quote: not issued',payment?'Payment: '+payment.status:'Payment: not requested'];currentCustomer={id,headers};lookupResult.textContent=lines.join('\\n');quoteActions.classList.toggle('visible',Boolean(quote&&quote.status==='ISSUED'));bookingActions.classList.toggle('visible',!['IN_PROGRESS','COMPLETED','CANCELLED','DECLINED'].includes(status.status)&&(!payment||payment.status!=='PAID'))}catch(err){currentCustomer=null;lookupResult.textContent=err.message}finally{lookupButton.disabled=false}});async function decide(decision){if(!currentCustomer)return;acceptQuote.disabled=declineQuote.disabled=true;try{await customerRequest('/bookings/'+encodeURIComponent(currentCustomer.id)+'/quote',currentCustomer.headers,false,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({decision})});lookup.requestSubmit()}catch(err){lookupResult.textContent=err.message}finally{acceptQuote.disabled=declineQuote.disabled=false}}acceptQuote.addEventListener('click',()=>decide('ACCEPTED'));declineQuote.addEventListener('click',()=>decide('DECLINED'));cancelBooking.addEventListener('click',async()=>{if(!currentCustomer||!confirm('Cancel this booking request?'))return;cancelBooking.disabled=true;try{await customerRequest('/bookings/'+encodeURIComponent(currentCustomer.id),currentCustomer.headers,false,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({action:'CANCEL'})});lookup.requestSubmit()}catch(err){lookupResult.textContent=err.message}finally{cancelBooking.disabled=false}});</script></body></html>"""
+<script>const f=document.querySelector('#booking'),b=document.querySelector('#submit'),r=document.querySelector('#result'),lookup=document.querySelector('#lookup'),lookupButton=document.querySelector('#lookup-submit'),lookupResult=document.querySelector('#lookup-result'),reference=document.querySelector('#lookup-reference'),token=document.querySelector('#lookup-token'),quoteActions=document.querySelector('#quote-actions'),bookingActions=document.querySelector('#booking-actions'),acceptQuote=document.querySelector('#accept-quote'),declineQuote=document.querySelector('#decline-quote'),cancelBooking=document.querySelector('#cancel-booking');let currentCustomer=null,pendingSubmission=null;function randomToken(bytes=32){const values=crypto.getRandomValues(new Uint8Array(bytes));return Array.from(values,value=>value.toString(16).padStart(2,'0')).join('')}f.addEventListener('submit',async e=>{e.preventDefault();b.disabled=true;r.style.display='block';r.textContent='Submitting…';const data=Object.fromEntries(new FormData(f));if(!pendingSubmission)pendingSubmission={key:crypto.randomUUID(),token:randomToken()};try{const x=await fetch('/bookings',{method:'POST',headers:{'content-type':'application/json','x-idempotency-key':pendingSubmission.key,'x-booking-token':pendingSubmission.token},body:JSON.stringify(data)}),j=await x.json();if(!x.ok)throw Error(j.error||'Request failed');r.textContent=(j.duplicate?'Original request recovered.':'Request recorded.')+'\\nReference: '+j.booking_id+'\\nAccess token (save now): '+j.access_token;reference.value=j.booking_id;token.value=j.access_token;pendingSubmission=null;f.reset()}catch(err){r.textContent=err.message+' You may submit again safely.'}finally{b.disabled=false}});async function customerRequest(path,headers,optional=false,options={}){const response=await fetch(path,{...options,headers:{...headers,...(options.headers||{})}}),data=await response.json();if(optional&&response.status===404)return null;if(!response.ok)throw Error(data.error||'Request failed');return data}lookup.addEventListener('submit',async e=>{e.preventDefault();lookupButton.disabled=true;quoteActions.classList.remove('visible');bookingActions.classList.remove('visible');lookupResult.style.display='block';lookupResult.textContent='Checking…';const id=reference.value.trim(),headers={'x-booking-token':token.value};try{const status=await customerRequest('/bookings/'+encodeURIComponent(id),headers),[quote,payment]=await Promise.all([customerRequest('/bookings/'+encodeURIComponent(id)+'/quote',headers,true),customerRequest('/bookings/'+encodeURIComponent(id)+'/payment',headers,true)]),lines=['Booking status: '+status.status,quote?'Latest quote: NGN '+Number(quote.amount_ngn).toLocaleString()+' · '+quote.status:'Latest quote: not issued',payment?'Payment: '+payment.status:'Payment: not requested'];currentCustomer={id,headers};lookupResult.textContent=lines.join('\\n');quoteActions.classList.toggle('visible',Boolean(quote&&quote.status==='ISSUED'));bookingActions.classList.toggle('visible',!['IN_PROGRESS','COMPLETED','CANCELLED','DECLINED'].includes(status.status)&&(!payment||payment.status!=='PAID'))}catch(err){currentCustomer=null;lookupResult.textContent=err.message}finally{lookupButton.disabled=false}});async function decide(decision){if(!currentCustomer)return;acceptQuote.disabled=declineQuote.disabled=true;try{await customerRequest('/bookings/'+encodeURIComponent(currentCustomer.id)+'/quote',currentCustomer.headers,false,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({decision})});lookup.requestSubmit()}catch(err){lookupResult.textContent=err.message}finally{acceptQuote.disabled=declineQuote.disabled=false}}acceptQuote.addEventListener('click',()=>decide('ACCEPTED'));declineQuote.addEventListener('click',()=>decide('DECLINED'));cancelBooking.addEventListener('click',async()=>{if(!currentCustomer||!confirm('Cancel this booking request?'))return;cancelBooking.disabled=true;try{await customerRequest('/bookings/'+encodeURIComponent(currentCustomer.id),currentCustomer.headers,false,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({action:'CANCEL'})});lookup.requestSubmit()}catch(err){lookupResult.textContent=err.message}finally{cancelBooking.disabled=false}});</script></body></html>"""
 
 
 def admin_page():

@@ -159,7 +159,8 @@ class DemoHandlerTests(unittest.TestCase):
         result = handler.lambda_handler(event("GET", "/"), None)
         self.assertEqual(result["statusCode"], 200)
         self.assertIn("Request a quote", result["body"])
-        self.assertIn(r"Request recorded.\nReference", result["body"])
+        self.assertIn("Original request recovered.", result["body"])
+        self.assertIn("x-idempotency-key", result["body"])
         self.assertIn("Check my booking", result["body"])
         self.assertIn("x-booking-token", result["body"])
 
@@ -223,6 +224,44 @@ class DemoHandlerTests(unittest.TestCase):
         admin_list = handler.lambda_handler(event("GET", "/admin/bookings", headers={"x-admin-password": "test-admin-password"}), None)
         listed_booking = next(item for item in json.loads(admin_list["body"])["bookings"] if item["booking_id"] == booking_id)
         self.assertNotIn("customer_token_hash", listed_booking)
+        self.assertNotIn("idempotency_hash", listed_booking)
+        self.assertNotIn("request_fingerprint", listed_booking)
+
+    def test_booking_retry_is_idempotent(self):
+        request = {
+            "name": "Retry Customer", "phone": "+2348000000001", "hub": "Lagos", "trip_type": "Local",
+            "pickup": "Ikoyi", "destination": "Airport", "pickup_at": "2027-05-01T09:00", "end_at": "2027-05-01T12:00",
+        }
+        headers = {"x-idempotency-key": "retry-key-1234567890", "x-booking-token": "customer-token-that-is-at-least-32-characters"}
+        before = len(FAKE_TABLES["test-notifications"].items)
+        created = handler.lambda_handler(event("POST", "/bookings", request, headers), None)
+        repeated = handler.lambda_handler(event("POST", "/bookings", request, headers), None)
+        created_body, repeated_body = json.loads(created["body"]), json.loads(repeated["body"])
+        self.assertEqual(created["statusCode"], 201)
+        self.assertEqual(repeated["statusCode"], 200)
+        self.assertEqual(repeated_body["booking_id"], created_body["booking_id"])
+        self.assertEqual(repeated_body["access_token"], headers["x-booking-token"])
+        self.assertTrue(repeated_body["duplicate"])
+        self.assertEqual(len(FAKE_TABLES["test-notifications"].items), before + 1)
+
+    def test_idempotency_key_cannot_be_reused_for_different_booking(self):
+        request = {
+            "name": "First Customer", "phone": "+2348000000002", "hub": "Ogun", "trip_type": "Local",
+            "pickup": "Abeokuta", "destination": "Ibara", "pickup_at": "2027-06-01T09:00", "end_at": "2027-06-01T12:00",
+        }
+        headers = {"x-idempotency-key": "conflict-key-123456", "x-booking-token": "another-customer-token-at-least-32-characters"}
+        self.assertEqual(handler.lambda_handler(event("POST", "/bookings", request, headers), None)["statusCode"], 201)
+        request["destination"] = "Lagos"
+        conflict = handler.lambda_handler(event("POST", "/bookings", request, headers), None)
+        self.assertEqual(conflict["statusCode"], 409)
+
+    def test_idempotent_booking_requires_strong_client_values(self):
+        request = {
+            "name": "Demo Customer", "phone": "+2348000000003", "hub": "Oyo", "trip_type": "Local",
+            "pickup": "Ibadan", "destination": "Bodija", "pickup_at": "2027-07-01T09:00", "end_at": "2027-07-01T12:00",
+        }
+        result = handler.lambda_handler(event("POST", "/bookings", request, {"x-idempotency-key": "short", "x-booking-token": "short"}), None)
+        self.assertEqual(result["statusCode"], 400)
 
     def test_invalid_hub_is_rejected(self):
         request = {

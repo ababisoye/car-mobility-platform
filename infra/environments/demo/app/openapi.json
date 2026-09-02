@@ -25,8 +25,9 @@
     "/bookings": {
       "post": {
         "tags": ["Public"], "summary": "Create a chauffeur booking request",
+        "parameters": [{"$ref": "#/components/parameters/IdempotencyKey"}, {"$ref": "#/components/parameters/NewBookingToken"}],
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BookingRequest"}}}},
-        "responses": {"201": {"description": "Request created; access_token is returned only once", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BookingCreated"}}}}, "400": {"$ref": "#/components/responses/Error"}, "413": {"$ref": "#/components/responses/PayloadTooLarge"}}
+        "responses": {"200": {"description": "Original request returned after an idempotent retry", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BookingCreated"}}}}, "201": {"description": "Request created; access_token is returned only once", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BookingCreated"}}}}, "400": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Conflict"}, "413": {"$ref": "#/components/responses/PayloadTooLarge"}}
       }
     },
     "/bookings/{booking_id}": {
@@ -107,7 +108,9 @@
       "webhookSignature": {"type": "apiKey", "in": "header", "name": "x-webhook-signature", "description": "Lowercase hexadecimal HMAC-SHA256 of the exact request body."}
     },
     "parameters": {
-      "BookingId": {"name": "booking_id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}
+      "BookingId": {"name": "booking_id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}},
+      "IdempotencyKey": {"name": "x-idempotency-key", "in": "header", "required": false, "description": "Random value of at least 16 characters. When supplied, x-booking-token is also required and retries return the original booking.", "schema": {"type": "string", "minLength": 16, "maxLength": 200}},
+      "NewBookingToken": {"name": "x-booking-token", "in": "header", "required": false, "description": "Client-generated token of at least 32 characters, required with x-idempotency-key and returned on a safe retry.", "schema": {"type": "string", "minLength": 32, "maxLength": 200}}
     },
     "responses": {
       "Error": {"description": "Invalid request", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
