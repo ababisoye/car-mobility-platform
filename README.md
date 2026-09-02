@@ -23,6 +23,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Queues booking, quote and assignment events in a provider-neutral notification outbox
 - Creates payment requests from approved quotes and verifies signed, idempotent payment webhooks
 - Applies payment, provider-event, booking and notification changes in one atomic DynamoDB transaction
+- Creates each payment request, booking link and notification atomically
 - Promotes immutable Lambda versions through a stable alias with a manual, OIDC-based rollback workflow
 - Emits privacy-conscious JSON logs with request correlation, latency and Lambda release metadata
 - Versions every DynamoDB record and provides an account-guarded, dry-run-first migration workflow

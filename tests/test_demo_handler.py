@@ -92,6 +92,8 @@ class FakeDynamoClient:
                 item.update(status=values[":status"]["S"], updated_at=int(values[":updated"]["N"]))
             elif update["TableName"] == "test-bookings" and ":booking_status" in values:
                 item.update(status=values[":booking_status"]["S"], payment_status=values[":payment_status"]["S"], updated_at=int(values[":updated"]["N"]))
+            elif update["TableName"] == "test-bookings" and ":payment_id" in values:
+                item.update(payment_id=values[":payment_id"]["S"], payment_status=values[":pending"]["S"], updated_at=int(values[":updated"]["N"]))
             elif update["TableName"] == "test-bookings" and ":status" in values:
                 item.update(status=values[":status"]["S"], resources_released_at=int(values[":updated"]["N"]), updated_at=int(values[":updated"]["N"]))
             elif update["TableName"] == "test-bookings":
@@ -551,6 +553,8 @@ class DemoHandlerTests(unittest.TestCase):
         created = handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/payments", {}, headers), None)
         self.assertEqual(created["statusCode"], 201)
         payment_id = json.loads(created["body"])["payment_id"]
+        repeated_request = handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/payments", {}, headers), None)
+        self.assertEqual(repeated_request["statusCode"], 409)
 
         webhook = event("POST", "/webhooks/payments", {"event_id": "provider-event-1", "payment_id": payment_id, "status": "PAID"})
         webhook["headers"] = {"x-webhook-signature": hmac.new(os.environ["PAYMENT_WEBHOOK_SECRET"].encode(), webhook["body"].encode(), hashlib.sha256).hexdigest()}
@@ -602,6 +606,39 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertEqual(FAKE_TABLES["test-payments"].items[f"PAYMENT#{payment_id}"]["status"], "PENDING")
         self.assertEqual(FAKE_TABLES["test-bookings"].items[booking_id]["status"], "QUOTED")
         self.assertNotIn("EVENT#failed-atomic-event", FAKE_TABLES["test-payments"].items)
+
+    def test_failed_payment_request_transaction_creates_nothing(self):
+        booking_id = "30000000-0000-4000-8000-000000000003"
+        quote_id = f"{booking_id}#1"
+        FAKE_TABLES["test-bookings"].items[booking_id] = {
+            "booking_id": booking_id, "status": "QUOTED", "quote_status": "ACCEPTED",
+            "accepted_quote_id": quote_id, "latest_quote_id": quote_id,
+        }
+        FAKE_TABLES["test-quotes"].items[quote_id] = {
+            "quote_id": quote_id, "booking_id": booking_id, "version": 1, "amount_ngn": 120000,
+            "valid_until": "2027-08-01T18:00", "status": "ISSUED",
+        }
+
+        class TransactionCancelled(Exception):
+            response = {"Error": {"Code": "TransactionCanceledException"}}
+
+        class FailingClient:
+            def transact_write_items(self, **_kwargs):
+                raise TransactionCancelled()
+
+        payments_before = set(FAKE_TABLES["test-payments"].items)
+        notifications_before = set(FAKE_TABLES["test-notifications"].items)
+        real_client = handler.DYNAMO_CLIENT
+        handler.DYNAMO_CLIENT = FailingClient()
+        try:
+            result = handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/payments", {}, {"x-admin-password": "test-admin-password"}), None)
+        finally:
+            handler.DYNAMO_CLIENT = real_client
+
+        self.assertEqual(result["statusCode"], 409)
+        self.assertEqual(set(FAKE_TABLES["test-payments"].items), payments_before)
+        self.assertEqual(set(FAKE_TABLES["test-notifications"].items), notifications_before)
+        self.assertNotIn("payment_id", FAKE_TABLES["test-bookings"].items[booking_id])
 
     def test_admin_can_manage_chauffeur_availability(self):
         headers = {"x-admin-password": "test-admin-password"}

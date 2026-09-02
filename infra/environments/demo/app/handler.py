@@ -696,9 +696,19 @@ def manage_payments(event, booking_id):
         "currency": "NGN", "provider": "PENDING_ADAPTER", "status": "PENDING", "created_at": now,
         "expires_at": now + (30 * 86400),
     }
-    PAYMENTS.put_item(Item=item, ConditionExpression="attribute_not_exists(record_id)")
-    TABLE.update_item(Key={"booking_id": booking_id}, UpdateExpression="SET payment_id = :payment_id, payment_status = :payment_status, updated_at = :updated", ExpressionAttributeValues={":payment_id": payment_id, ":payment_status": "PENDING", ":updated": now})
-    queue_notification(booking_id, "PAYMENT_REQUESTED", f"A payment request for NGN {int(quote['amount_ngn']):,} is ready.")
+    notification_id = str(uuid.uuid4())
+    notification_message = f"A payment request for NGN {int(quote['amount_ngn']):,} is ready."
+    try:
+        DYNAMO_CLIENT.transact_write_items(TransactItems=[
+            {"Put": {"TableName": PAYMENTS_TABLE_NAME, "Item": {"schema_version": {"N": str(SCHEMA_VERSION)}, "record_id": {"S": item["record_id"]}, "record_type": {"S": "PAYMENT"}, "payment_id": {"S": payment_id}, "booking_id": {"S": booking_id}, "quote_id": {"S": quote["quote_id"]}, "amount_ngn": {"N": str(quote["amount_ngn"])}, "currency": {"S": "NGN"}, "provider": {"S": "PENDING_ADAPTER"}, "status": {"S": "PENDING"}, "created_at": {"N": str(now)}, "expires_at": {"N": str(item["expires_at"])}}, "ConditionExpression": "attribute_not_exists(record_id)"}},
+            {"Update": {"TableName": BOOKINGS_TABLE_NAME, "Key": {"booking_id": {"S": booking_id}}, "UpdateExpression": "SET payment_id = :payment_id, payment_status = :pending, updated_at = :updated", "ConditionExpression": "#s = :quoted AND quote_status = :accepted AND accepted_quote_id = :quote_id AND (attribute_not_exists(payment_status) OR payment_status <> :pending)", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":payment_id": {"S": payment_id}, ":pending": {"S": "PENDING"}, ":updated": {"N": str(now)}, ":quoted": {"S": "QUOTED"}, ":accepted": {"S": "ACCEPTED"}, ":quote_id": {"S": quote["quote_id"]}}}},
+            {"Put": {"TableName": NOTIFICATIONS_TABLE_NAME, "Item": {"schema_version": {"N": str(SCHEMA_VERSION)}, "notification_id": {"S": notification_id}, "booking_id": {"S": booking_id}, "event_type": {"S": "PAYMENT_REQUESTED"}, "audience": {"S": "CUSTOMER"}, "channel": {"S": "PENDING_PROVIDER"}, "message": {"S": notification_message}, "status": {"S": "PENDING"}, "created_at": {"N": str(now)}, "expires_at": {"N": str(now + (30 * 86400))}}, "ConditionExpression": "attribute_not_exists(notification_id)"}},
+        ])
+    except Exception as error:
+        error_response = getattr(error, "response", {})
+        if error_response.get("Error", {}).get("Code") == "TransactionCanceledException":
+            return response(409, {"error": "The booking or payment state changed; refresh before creating another payment request."})
+        raise
     log_event("payment_requested", booking_id=booking_id, payment_id=payment_id)
     return response(201, item)
 
