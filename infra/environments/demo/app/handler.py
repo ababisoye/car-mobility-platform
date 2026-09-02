@@ -108,6 +108,10 @@ def clean(value, maximum):
     return str(value or "").strip()[:maximum]
 
 
+def current_datetime(tzinfo=None):
+    return datetime.now(tzinfo)
+
+
 def valid_uuid(value):
     try:
         return str(uuid.UUID(str(value))) == str(value).lower()
@@ -195,7 +199,7 @@ def create_booking(event):
     try:
         pickup_time = datetime.fromisoformat(booking["pickup_at"])
         end_time = datetime.fromisoformat(booking["end_at"])
-        now = datetime.now(pickup_time.tzinfo)
+        now = current_datetime(pickup_time.tzinfo)
         if end_time <= pickup_time:
             return response(400, {"error": "Expected end time must be after pickup time."})
         if pickup_time <= now:
@@ -623,7 +627,7 @@ def manage_quotes(event, booking_id):
         return response(400, {"error": "Provide a whole-number NGN amount and valid expiry time."})
     if amount_ngn < 1 or amount_ngn > 100_000_000:
         return response(400, {"error": "Quote amount must be between NGN 1 and NGN 100,000,000."})
-    if valid_time <= datetime.now(valid_time.tzinfo):
+    if valid_time <= current_datetime(valid_time.tzinfo):
         return response(400, {"error": "Quote expiry must be in the future."})
     version = max((int(item.get("version", 0)) for item in quotes), default=0) + 1
     quote_id = f"{booking_id}#{version}"
@@ -689,7 +693,7 @@ def decide_quote(event, booking_id):
     quote = quotes[0]
     try:
         valid_time = datetime.fromisoformat(quote["valid_until"])
-        expired = valid_time <= datetime.now(valid_time.tzinfo)
+        expired = valid_time <= current_datetime(valid_time.tzinfo)
     except (TypeError, ValueError):
         expired = True
     if expired:
@@ -740,7 +744,7 @@ def manage_payments(event, booking_id):
         return response(409, {"error": "A payment request is already pending for this booking."})
     quote = quotes[0]
     valid_time = datetime.fromisoformat(quote["valid_until"])
-    if valid_time <= datetime.now(valid_time.tzinfo):
+    if valid_time <= current_datetime(valid_time.tzinfo):
         return response(409, {"error": "The latest quote has expired; issue a new quote first."})
     if booking.get("quote_status") != "ACCEPTED" or booking.get("accepted_quote_id") != quote.get("quote_id"):
         return response(409, {"error": "The customer must accept the latest quote before payment is requested."})

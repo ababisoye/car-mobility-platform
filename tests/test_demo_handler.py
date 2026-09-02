@@ -9,6 +9,7 @@ import sys
 import types
 import unittest
 from contextlib import redirect_stdout
+from datetime import datetime
 from pathlib import Path
 
 
@@ -176,10 +177,13 @@ def event(method, path, body=None, headers=None):
 class DemoHandlerTests(unittest.TestCase):
     def setUp(self):
         self.real_log_event = handler.log_event
+        self.real_current_datetime = handler.current_datetime
         handler.log_event = lambda *_args, **_kwargs: None
+        handler.current_datetime = lambda tzinfo=None: datetime(2026, 9, 2, 12, 0, tzinfo=tzinfo)
 
     def tearDown(self):
         handler.log_event = self.real_log_event
+        handler.current_datetime = self.real_current_datetime
 
     def confirm_booking(self, booking_response, staff_headers):
         booking = json.loads(booking_response["body"])
