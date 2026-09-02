@@ -581,20 +581,19 @@ def manage_quotes(event, booking_id):
         "created_at": now,
         "expires_at": int(valid_time.timestamp()) + (30 * 86400),
     }
+    notification_id = str(uuid.uuid4())
+    notification_message = f"Quote version {version} was issued for NGN {amount_ngn:,}."
     try:
-        QUOTES.put_item(Item=quote, ConditionExpression="attribute_not_exists(quote_id)")
+        DYNAMO_CLIENT.transact_write_items(TransactItems=[
+            {"Put": {"TableName": QUOTES_TABLE_NAME, "Item": {"schema_version": {"N": str(SCHEMA_VERSION)}, "quote_id": {"S": quote_id}, "booking_id": {"S": booking_id}, "version": {"N": str(version)}, "amount_ngn": {"N": str(amount_ngn)}, "valid_until": {"S": valid_until}, "notes": {"S": quote["notes"]}, "status": {"S": "ISSUED"}, "created_at": {"N": str(now)}, "expires_at": {"N": str(quote["expires_at"])}}, "ConditionExpression": "attribute_not_exists(quote_id)"}},
+            {"Update": {"TableName": BOOKINGS_TABLE_NAME, "Key": {"booking_id": {"S": booking_id}}, "UpdateExpression": "SET #s = :quoted, latest_quote_id = :quote_id, quote_version = :version, quote_amount_ngn = :amount, quote_status = :issued, accepted_quote_id = :empty, updated_at = :updated", "ConditionExpression": "#s = :current_status", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":quoted": {"S": "QUOTED"}, ":quote_id": {"S": quote_id}, ":version": {"N": str(version)}, ":amount": {"N": str(amount_ngn)}, ":issued": {"S": "ISSUED"}, ":empty": {"S": ""}, ":updated": {"N": str(now)}, ":current_status": {"S": booking["status"]}}}},
+            {"Put": {"TableName": NOTIFICATIONS_TABLE_NAME, "Item": {"schema_version": {"N": str(SCHEMA_VERSION)}, "notification_id": {"S": notification_id}, "booking_id": {"S": booking_id}, "event_type": {"S": "QUOTE_ISSUED"}, "audience": {"S": "CUSTOMER"}, "channel": {"S": "PENDING_PROVIDER"}, "message": {"S": notification_message}, "status": {"S": "PENDING"}, "created_at": {"N": str(now)}, "expires_at": {"N": str(now + (30 * 86400))}}, "ConditionExpression": "attribute_not_exists(notification_id)"}},
+        ])
     except Exception as error:
         error_response = getattr(error, "response", {})
-        if error_response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
-            return response(409, {"error": "A quote was issued concurrently; refresh and try again."})
+        if error_response.get("Error", {}).get("Code") == "TransactionCanceledException":
+            return response(409, {"error": "The booking or quote changed concurrently; refresh and try again."})
         raise
-    TABLE.update_item(
-        Key={"booking_id": booking_id},
-        UpdateExpression="SET #s = :quoted, latest_quote_id = :quote_id, quote_version = :version, quote_amount_ngn = :amount, quote_status = :issued, accepted_quote_id = :empty, updated_at = :updated",
-        ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":quoted": "QUOTED", ":quote_id": quote_id, ":version": version, ":amount": amount_ngn, ":issued": "ISSUED", ":empty": "", ":updated": now},
-    )
-    queue_notification(booking_id, "QUOTE_ISSUED", f"Quote version {version} was issued for NGN {amount_ngn:,}.")
     log_event("quote_issued", booking_id=booking_id, quote_id=quote_id, version=version)
     return response(201, quote)
 
@@ -641,20 +640,18 @@ def decide_quote(event, booking_id):
     now = int(time.time())
     booking_status = "QUOTED" if decision == "ACCEPTED" else "REVIEWING"
     accepted_quote_id = quote["quote_id"] if decision == "ACCEPTED" else ""
+    notification_id = str(uuid.uuid4())
+    notification_message = f"The customer {decision.lower()} quote version {quote['version']}."
     try:
-        TABLE.update_item(
-            Key={"booking_id": booking_id},
-            UpdateExpression="SET #s = :decision_status, quote_status = :decision, accepted_quote_id = :accepted_quote_id, quote_decided_at = :updated, updated_at = :updated",
-            ConditionExpression="attribute_exists(booking_id) AND latest_quote_id = :quote_id AND quote_status = :issued",
-            ExpressionAttributeNames={"#s": "status"},
-            ExpressionAttributeValues={":decision_status": booking_status, ":decision": decision, ":accepted_quote_id": accepted_quote_id, ":updated": now, ":quote_id": quote["quote_id"], ":issued": "ISSUED"},
-        )
+        DYNAMO_CLIENT.transact_write_items(TransactItems=[
+            {"Update": {"TableName": BOOKINGS_TABLE_NAME, "Key": {"booking_id": {"S": booking_id}}, "UpdateExpression": "SET #s = :decision_status, quote_status = :decision, accepted_quote_id = :accepted_quote_id, quote_decided_at = :updated, updated_at = :updated", "ConditionExpression": "attribute_exists(booking_id) AND latest_quote_id = :quote_id AND quote_status = :issued", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":decision_status": {"S": booking_status}, ":decision": {"S": decision}, ":accepted_quote_id": {"S": accepted_quote_id}, ":updated": {"N": str(now)}, ":quote_id": {"S": quote["quote_id"]}, ":issued": {"S": "ISSUED"}}}},
+            {"Put": {"TableName": NOTIFICATIONS_TABLE_NAME, "Item": {"schema_version": {"N": str(SCHEMA_VERSION)}, "notification_id": {"S": notification_id}, "booking_id": {"S": booking_id}, "event_type": {"S": f"QUOTE_{decision}"}, "audience": {"S": "STAFF"}, "channel": {"S": "PENDING_PROVIDER"}, "message": {"S": notification_message}, "status": {"S": "PENDING"}, "created_at": {"N": str(now)}, "expires_at": {"N": str(now + (30 * 86400))}}, "ConditionExpression": "attribute_not_exists(notification_id)"}},
+        ])
     except Exception as error:
         error_response = getattr(error, "response", {})
-        if error_response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+        if error_response.get("Error", {}).get("Code") == "TransactionCanceledException":
             return response(409, {"error": "The quote changed while the decision was submitted; refresh and try again."})
         raise
-    queue_notification(booking_id, f"QUOTE_{decision}", f"The customer {decision.lower()} quote version {quote['version']}.", "STAFF")
     log_event("quote_decided", booking_id=booking_id, quote_id=quote["quote_id"], decision=decision)
     return response(200, {"booking_id": booking_id, "quote_version": quote["version"], "quote_status": decision, "status": booking_status})
 

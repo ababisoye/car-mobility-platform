@@ -90,6 +90,10 @@ class FakeDynamoClient:
             values = update["ExpressionAttributeValues"]
             if update["TableName"] == "test-payments":
                 item.update(status=values[":status"]["S"], updated_at=int(values[":updated"]["N"]))
+            elif update["TableName"] == "test-bookings" and ":quoted" in values and ":version" in values:
+                item.update(status=values[":quoted"]["S"], latest_quote_id=values[":quote_id"]["S"], quote_version=int(values[":version"]["N"]), quote_amount_ngn=int(values[":amount"]["N"]), quote_status=values[":issued"]["S"], accepted_quote_id=values[":empty"]["S"], updated_at=int(values[":updated"]["N"]))
+            elif update["TableName"] == "test-bookings" and ":decision_status" in values:
+                item.update(status=values[":decision_status"]["S"], quote_status=values[":decision"]["S"], accepted_quote_id=values[":accepted_quote_id"]["S"], quote_decided_at=int(values[":updated"]["N"]), updated_at=int(values[":updated"]["N"]))
             elif update["TableName"] == "test-bookings" and ":booking_status" in values:
                 item.update(status=values[":booking_status"]["S"], payment_status=values[":payment_status"]["S"], updated_at=int(values[":updated"]["N"]))
             elif update["TableName"] == "test-bookings" and ":payment_id" in values:
@@ -516,6 +520,31 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertEqual(json.loads(history["body"])["count"], 2)
         self.assertEqual(json.loads(latest["body"])["amount_ngn"], 275000)
 
+    def test_failed_quote_issue_transaction_creates_nothing(self):
+        staff = {"x-admin-password": "test-admin-password"}
+        created = handler.lambda_handler(event("POST", "/bookings", {"name": "Atomic Quote", "phone": "+2348000000020", "hub": "Lagos", "trip_type": "Local", "pickup": "Ikoyi", "destination": "Lekki", "pickup_at": "2027-09-01T09:00", "end_at": "2027-09-01T12:00"}), None)
+        booking_id = json.loads(created["body"])["booking_id"]
+
+        class TransactionCancelled(Exception):
+            response = {"Error": {"Code": "TransactionCanceledException"}}
+
+        class FailingClient:
+            def transact_write_items(self, **_kwargs):
+                raise TransactionCancelled()
+
+        quotes_before = set(FAKE_TABLES["test-quotes"].items)
+        notifications_before = set(FAKE_TABLES["test-notifications"].items)
+        real_client = handler.DYNAMO_CLIENT
+        handler.DYNAMO_CLIENT = FailingClient()
+        try:
+            result = handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/quotes", {"amount_ngn": 150000, "valid_until": "2027-08-25T18:00"}, staff), None)
+        finally:
+            handler.DYNAMO_CLIENT = real_client
+        self.assertEqual(result["statusCode"], 409)
+        self.assertEqual(set(FAKE_TABLES["test-quotes"].items), quotes_before)
+        self.assertEqual(set(FAKE_TABLES["test-notifications"].items), notifications_before)
+        self.assertEqual(FAKE_TABLES["test-bookings"].items[booking_id]["status"], "REQUESTED")
+
     def test_customer_can_accept_or_decline_latest_quote_once(self):
         staff = {"x-admin-password": "test-admin-password"}
         decisions = (("ACCEPTED", "QUOTED"), ("DECLINED", "REVIEWING"))
@@ -536,6 +565,31 @@ class DemoHandlerTests(unittest.TestCase):
                 self.assertEqual(json.loads(decided["body"])["status"], expected_booking_status)
                 self.assertEqual(json.loads(latest["body"])["status"], decision)
                 self.assertEqual(repeated["statusCode"], 409)
+
+    def test_failed_quote_decision_transaction_changes_nothing(self):
+        staff = {"x-admin-password": "test-admin-password"}
+        created = handler.lambda_handler(event("POST", "/bookings", {"name": "Atomic Decision", "phone": "+2348000000021", "hub": "Abuja", "trip_type": "Local", "pickup": "Maitama", "destination": "Wuse", "pickup_at": "2027-08-20T09:00", "end_at": "2027-08-20T12:00"}), None)
+        booking = json.loads(created["body"])
+        booking_id = booking["booking_id"]
+        handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/quotes", {"amount_ngn": 175000, "valid_until": "2027-08-15T18:00"}, staff), None)
+
+        class TransactionCancelled(Exception):
+            response = {"Error": {"Code": "TransactionCanceledException"}}
+
+        class FailingClient:
+            def transact_write_items(self, **_kwargs):
+                raise TransactionCancelled()
+
+        notifications_before = set(FAKE_TABLES["test-notifications"].items)
+        real_client = handler.DYNAMO_CLIENT
+        handler.DYNAMO_CLIENT = FailingClient()
+        try:
+            result = handler.lambda_handler(event("PATCH", f"/bookings/{booking_id}/quote", {"decision": "ACCEPTED"}, {"x-booking-token": booking["access_token"]}), None)
+        finally:
+            handler.DYNAMO_CLIENT = real_client
+        self.assertEqual(result["statusCode"], 409)
+        self.assertEqual(set(FAKE_TABLES["test-notifications"].items), notifications_before)
+        self.assertEqual(FAKE_TABLES["test-bookings"].items[booking_id]["quote_status"], "ISSUED")
 
     def test_signed_payment_webhook_is_idempotent(self):
         headers = {"x-admin-password": "test-admin-password"}

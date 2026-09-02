@@ -20,6 +20,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Enforces an explicit booking state machine and exposes only valid dashboard transitions
 - Preserves immutable quote revisions and exposes only the latest customer quote
 - Lets token-authenticated customers accept or decline only the latest unexpired quote
+- Applies quote issuance and customer decisions with their notifications atomically
 - Queues booking, quote and assignment events in a provider-neutral notification outbox
 - Creates payment requests from approved quotes and verifies signed, idempotent payment webhooks
 - Applies payment, provider-event, booking and notification changes in one atomic DynamoDB transaction
@@ -231,6 +232,8 @@ The browser also sends a random idempotency key and client-generated booking tok
 Unpaid customers can cancel online before a trip starts. Cancellation and staff completion release an assigned vehicle and chauffeur in the same DynamoDB transaction as the booking update, making those resources safely available for another trip. Paid cancellations require operations review because refunds are provider-dependent. See [booking lifecycle](docs/booking-lifecycle.md).
 
 Server-side lifecycle rules prevent skipped stages: confirmation requires an accepted quote or confirmed payment, assignment requires confirmation, and completion requires an in-progress assigned trip. The dashboard receives and displays only valid next states. See the [booking state machine](docs/booking-state-machine.md).
+
+Quote issuance and customer decisions also use conditional, all-or-nothing writes so booking state, immutable revisions and notifications cannot diverge. See [quote consistency](docs/quote-consistency.md).
 
 Destroy the demo when it is no longer needed:
 
