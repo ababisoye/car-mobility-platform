@@ -532,6 +532,11 @@ def availability_records(event, table, id_field, record_type):
     if record_type == "vehicle":
         item["category"] = clean(data.get("category"), 60)
         item["ownership"] = clean(data.get("ownership"), 30) or "Company"
+    else:
+        interstate_eligible = clean(data.get("interstate_eligible"), 3).upper() or "NO"
+        if interstate_eligible not in {"YES", "NO"}:
+            return response(400, {"error": "Select whether the chauffeur is eligible for interstate trips."})
+        item["interstate_eligible"] = interstate_eligible
     table.put_item(Item=item, ConditionExpression=f"attribute_not_exists({id_field})")
     return response(201, item)
 
@@ -600,6 +605,8 @@ def assign_booking(event, booking_id):
         return response(409, {"error": "Vehicle and chauffeur must belong to the booking hub."})
     if vehicle.get("status") != "AVAILABLE" or chauffeur.get("status") != "AVAILABLE":
         return response(409, {"error": "Selected vehicle or chauffeur is no longer available."})
+    if booking.get("trip_type") == "Interstate" and chauffeur.get("interstate_eligible") != "YES":
+        return response(409, {"error": "Select a chauffeur approved for interstate trips."})
     for existing in TABLE.scan(Limit=100).get("Items", []):
         if existing.get("booking_id") == booking_id or existing.get("status") in {"DECLINED", "CANCELLED", "COMPLETED"}:
             continue
@@ -936,7 +943,7 @@ def admin_page():
 <section id="login" class="login"><div class="row"><label>Staff password<input id="password" type="password" autocomplete="current-password"></label><button id="open">Open dashboard</button></div><p id="message" class="error" role="alert"></p></section>
 <section id="dashboard" class="hidden"><div class="toolbar"><div><strong id="count">Requests</strong><div id="role" class="muted"></div></div><button id="refresh">Refresh all</button></div><div id="summary" class="summary-grid"></div><div id="cards" class="cards"></div>
 <div class="inventory"><section class="panel"><h2>Vehicles</h2><form id="vehicle-form" class="form-grid"><label>Vehicle name<input name="name" required placeholder="Mercedes GLE"></label><label>Hub<select name="hub" required><option>Lagos</option><option>Ogun</option><option>Oyo</option><option>Abuja</option></select></label><label>Category<input name="category" placeholder="Executive SUV"></label><label>Ownership<select name="ownership"><option>Company</option><option>Partner</option></select></label><button type="submit">Add vehicle</button></form><div id="vehicles" class="resource-list"></div></section>
-<section class="panel"><h2>Chauffeurs</h2><form id="chauffeur-form" class="form-grid"><label>Chauffeur name<input name="name" required></label><label>Hub<select name="hub" required><option>Lagos</option><option>Ogun</option><option>Oyo</option><option>Abuja</option></select></label><button type="submit">Add chauffeur</button></form><div id="chauffeurs" class="resource-list"></div></section></div>
+<section class="panel"><h2>Chauffeurs</h2><form id="chauffeur-form" class="form-grid"><label>Chauffeur name<input name="name" required></label><label>Hub<select name="hub" required><option>Lagos</option><option>Ogun</option><option>Oyo</option><option>Abuja</option></select></label><label>Interstate approved<select name="interstate_eligible" required><option value="NO">No</option><option value="YES">Yes</option></select></label><button type="submit">Add chauffeur</button></form><div id="chauffeurs" class="resource-list"></div></section></div>
 <section class="panel outbox"><h2>Notification outbox</h2><p class="muted">Delivery-ready events are stored here without contacting a paid provider.</p><div id="notifications" class="notification-list"></div></section></section></main>
 <script>
 const login=document.querySelector('#login'),dashboard=document.querySelector('#dashboard'),summary=document.querySelector('#summary'),cards=document.querySelector('#cards'),message=document.querySelector('#message'),password=document.querySelector('#password'),count=document.querySelector('#count'),vehicles=document.querySelector('#vehicles'),chauffeurs=document.querySelector('#chauffeurs'),notifications=document.querySelector('#notifications'),roleLabel=document.querySelector('#role');let currentRole='';

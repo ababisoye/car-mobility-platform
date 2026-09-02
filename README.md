@@ -19,6 +19,7 @@ Contributions are welcome through the [contribution guide](CONTRIBUTING.md). Rep
 - Added vehicle and chauffeur availability management across all four hubs
 - Added atomic booking assignment that reserves a vehicle and chauffeur and queues its notification together
 - Rejects unavailable, wrong-hub and overlapping resource assignments
+- Restricts interstate assignments to explicitly approved chauffeurs
 - Reserves system-managed fleet states for booking transactions and protects manual changes from races
 - Atomically releases assigned fleet resources and queues notifications when trips complete or bookings terminate
 - Atomically starts trips, moves vehicles to on-trip state and revalidates chauffeur assignments

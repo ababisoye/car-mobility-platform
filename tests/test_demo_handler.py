@@ -338,6 +338,29 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertEqual(set(FAKE_TABLES["test-bookings"].items), bookings_before)
         self.assertEqual(set(FAKE_TABLES["test-notifications"].items), notifications_before)
 
+    def test_interstate_assignment_requires_an_approved_chauffeur(self):
+        booking_id = "31000000-0000-4000-8000-000000000003"
+        vehicle_id = "32000000-0000-4000-8000-000000000003"
+        chauffeur_id = "33000000-0000-4000-8000-000000000003"
+        FAKE_TABLES["test-bookings"].items[booking_id] = {
+            "booking_id": booking_id, "status": "CONFIRMED", "hub": "Lagos",
+            "trip_type": "Interstate", "pickup_at": "2027-04-01T09:00", "end_at": "2027-04-01T18:00",
+        }
+        FAKE_TABLES["test-vehicles"].items[vehicle_id] = {"vehicle_id": vehicle_id, "status": "AVAILABLE", "hub": "Lagos"}
+        FAKE_TABLES["test-chauffeurs"].items[chauffeur_id] = {
+            "chauffeur_id": chauffeur_id, "status": "AVAILABLE", "hub": "Lagos", "interstate_eligible": "NO"
+        }
+        request = event("PATCH", f"/admin/bookings/{booking_id}/assignment", {"vehicle_id": vehicle_id, "chauffeur_id": chauffeur_id}, {"x-admin-password": "test-admin-password"})
+
+        rejected = handler.lambda_handler(request, None)
+        self.assertEqual(rejected["statusCode"], 409)
+        self.assertIn("approved for interstate", json.loads(rejected["body"])["error"])
+        self.assertEqual(FAKE_TABLES["test-bookings"].items[booking_id]["status"], "CONFIRMED")
+
+        FAKE_TABLES["test-chauffeurs"].items[chauffeur_id]["interstate_eligible"] = "YES"
+        accepted = handler.lambda_handler(request, None)
+        self.assertEqual(accepted["statusCode"], 200)
+
     def test_invalid_hub_is_rejected(self):
         request = {
             "name": "Demo Customer",
@@ -903,6 +926,7 @@ class DemoHandlerTests(unittest.TestCase):
         )
         self.assertEqual(created["statusCode"], 201)
         chauffeur_id = json.loads(created["body"])["chauffeur_id"]
+        self.assertEqual(json.loads(created["body"])["interstate_eligible"], "NO")
         listed = handler.lambda_handler(event("GET", "/admin/chauffeurs", headers=headers), None)
         self.assertIn(chauffeur_id, {item["chauffeur_id"] for item in json.loads(listed["body"])["items"]})
         updated = handler.lambda_handler(
