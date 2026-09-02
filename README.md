@@ -6,6 +6,8 @@ A cloud-native booking platform for chauffeur-driven luxury vehicles in Nigeria.
 
 The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approved interstate journeys. Self-drive rental is intentionally excluded.
 
+Contributions are welcome through the [contribution guide](CONTRIBUTING.md). Report vulnerabilities using the private process in the [security policy](SECURITY.md), never a public issue. This public repository currently has no open-source license, so viewing the source does not grant reuse rights.
+
 ## Engineering outcomes
 
 - Designed a serverless demonstration that has no always-running compute

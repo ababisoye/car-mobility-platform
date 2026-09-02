@@ -1,0 +1,35 @@
+name: Feature request
+description: Propose a focused platform or infrastructure improvement.
+title: "feat: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What user or operational problem should this solve?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed outcome
+      description: Describe behavior, not only implementation.
+    validations:
+      required: true
+  - type: dropdown
+    id: funding
+    attributes:
+      label: Cost profile
+      options:
+        - Zero-funding demo
+        - Later funded stage
+        - Unknown; needs analysis
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Security, privacy and data impact
+    validations:
+      required: true
