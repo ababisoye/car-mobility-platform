@@ -256,6 +256,8 @@ Creating or committing this workflow does not deploy infrastructure and does not
 
 The Lambda emits structured JSON without request bodies, credentials or customer contact fields. Every response includes `x-request-id`, and `/health` identifies the active Lambda version. See the [observability and incident runbook](docs/observability-runbook.md) for safe CloudWatch queries and response steps.
 
+The demo also enforces exact route shapes, canonical UUIDs, a 16 KB request limit, contact-field validation and bounded trip dates. These application checks remain free, but they do not replace production-grade edge throttling or bot protection. See [API hardening](docs/api-hardening.md).
+
 All DynamoDB records carry an explicit schema version. The [data migration guide](docs/data-migrations.md) defines additive compatibility, dry-run review, account verification, conditional writes and rollback expectations. The migration helper is never invoked automatically by CI or deployment.
 
 ## Skills demonstrated

@@ -1,15 +1,15 @@
 import base64
 import hashlib
 import hmac
-import html
 import json
 import os
+import re
 import secrets
 import time
 import uuid
 from contextvars import ContextVar
 from decimal import Decimal
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import boto3
@@ -35,6 +35,7 @@ OPERATOR_PASSWORD_HASH = os.environ.get("OPERATOR_PASSWORD_HASH", "")
 PAYMENT_WEBHOOK_SECRET = os.environ.get("PAYMENT_WEBHOOK_SECRET", "")
 RELEASE_VERSION = os.environ.get("AWS_LAMBDA_FUNCTION_VERSION", "local")
 SCHEMA_VERSION = 1
+MAX_REQUEST_BYTES = 16_384
 OPENAPI_TEXT = Path(__file__).with_name("openapi.json").read_text(encoding="utf-8")
 REQUEST_ID = ContextVar("request_id", default="unknown")
 ACTOR_ROLE = ContextVar("actor_role", default="PUBLIC")
@@ -79,6 +80,13 @@ def log_event(event_name, level="INFO", **fields):
 
 def clean(value, maximum):
     return str(value or "").strip()[:maximum]
+
+
+def valid_uuid(value):
+    try:
+        return str(uuid.UUID(str(value))) == str(value).lower()
+    except (ValueError, TypeError, AttributeError):
+        return False
 
 
 def booking_access_token(event):
@@ -137,10 +145,24 @@ def create_booking(event):
         return response(400, {"error": "Complete all required fields.", "fields": missing})
     if booking["hub"] not in HUBS or booking["trip_type"] not in TRIP_TYPES:
         return response(400, {"error": "Select a valid hub and trip type."})
+    phone_digits = re.sub(r"\D", "", booking["phone"])
+    if not 10 <= len(phone_digits) <= 15 or not re.fullmatch(r"\+?[0-9 ()-]+", booking["phone"]):
+        return response(400, {"error": "Provide a valid phone number."})
+    if booking["email"] and not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", booking["email"]):
+        return response(400, {"error": "Provide a valid email address."})
     try:
-        if datetime.fromisoformat(booking["end_at"]) <= datetime.fromisoformat(booking["pickup_at"]):
+        pickup_time = datetime.fromisoformat(booking["pickup_at"])
+        end_time = datetime.fromisoformat(booking["end_at"])
+        now = datetime.now(pickup_time.tzinfo)
+        if end_time <= pickup_time:
             return response(400, {"error": "Expected end time must be after pickup time."})
-    except ValueError:
+        if pickup_time <= now:
+            return response(400, {"error": "Pickup time must be in the future."})
+        if pickup_time > now + timedelta(days=366):
+            return response(400, {"error": "Pickup time cannot be more than 366 days ahead."})
+        if end_time - pickup_time > timedelta(days=30):
+            return response(400, {"error": "A booking request cannot exceed 30 days."})
+    except (TypeError, ValueError):
         return response(400, {"error": "Provide valid pickup and expected end times."})
 
     now = int(time.time())
@@ -631,6 +653,11 @@ def route_request(event):
     request = event.get("requestContext", {}).get("http", {})
     method = request.get("method", "GET")
     path = event.get("rawPath", "/")
+    parts = [part for part in path.split("/") if part]
+
+    def resource_id(index):
+        value = parts[index] if len(parts) > index else ""
+        return value if valid_uuid(value) else None
 
     if method == "GET" and path == "/":
         return response(200, page(), "text/html; charset=utf-8")
@@ -644,36 +671,36 @@ def route_request(event):
         return staff_session(event)
     if method == "GET" and path == "/admin/bookings":
         return list_bookings(event)
-    if method == "PATCH" and path.startswith("/admin/bookings/") and path.endswith("/assignment"):
-        return assign_booking(event, html.escape(path.split("/")[-2]))
-    if method in {"GET", "POST"} and path.startswith("/admin/bookings/") and path.endswith("/quotes"):
-        return manage_quotes(event, html.escape(path.split("/")[-2]))
-    if method in {"GET", "POST"} and path.startswith("/admin/bookings/") and path.endswith("/payments"):
-        return manage_payments(event, html.escape(path.split("/")[-2]))
-    if method == "PATCH" and path.startswith("/admin/bookings/"):
-        return update_booking(event, html.escape(path.rsplit("/", 1)[-1]))
+    if method == "PATCH" and len(parts) == 4 and parts[:2] == ["admin", "bookings"] and parts[3] == "assignment" and resource_id(2):
+        return assign_booking(event, resource_id(2))
+    if method in {"GET", "POST"} and len(parts) == 4 and parts[:2] == ["admin", "bookings"] and parts[3] == "quotes" and resource_id(2):
+        return manage_quotes(event, resource_id(2))
+    if method in {"GET", "POST"} and len(parts) == 4 and parts[:2] == ["admin", "bookings"] and parts[3] == "payments" and resource_id(2):
+        return manage_payments(event, resource_id(2))
+    if method == "PATCH" and len(parts) == 3 and parts[:2] == ["admin", "bookings"] and resource_id(2):
+        return update_booking(event, resource_id(2))
     if method in {"GET", "POST"} and path == "/admin/vehicles":
         return availability_records(event, VEHICLES, "vehicle_id", "vehicle")
-    if method == "PATCH" and path.startswith("/admin/vehicles/"):
-        return update_availability(event, VEHICLES, "vehicle_id", html.escape(path.rsplit("/", 1)[-1]), VEHICLE_STATUSES)
+    if method == "PATCH" and len(parts) == 3 and parts[:2] == ["admin", "vehicles"] and resource_id(2):
+        return update_availability(event, VEHICLES, "vehicle_id", resource_id(2), VEHICLE_STATUSES)
     if method in {"GET", "POST"} and path == "/admin/chauffeurs":
         return availability_records(event, CHAUFFEURS, "chauffeur_id", "chauffeur")
-    if method == "PATCH" and path.startswith("/admin/chauffeurs/"):
-        return update_availability(event, CHAUFFEURS, "chauffeur_id", html.escape(path.rsplit("/", 1)[-1]), CHAUFFEUR_STATUSES)
+    if method == "PATCH" and len(parts) == 3 and parts[:2] == ["admin", "chauffeurs"] and resource_id(2):
+        return update_availability(event, CHAUFFEURS, "chauffeur_id", resource_id(2), CHAUFFEUR_STATUSES)
     if method == "GET" and path == "/admin/notifications":
         return notification_outbox(event)
-    if method == "PATCH" and path.startswith("/admin/notifications/"):
-        return notification_outbox(event, html.escape(path.rsplit("/", 1)[-1]))
+    if method == "PATCH" and len(parts) == 3 and parts[:2] == ["admin", "notifications"] and resource_id(2):
+        return notification_outbox(event, resource_id(2))
     if method == "POST" and path == "/bookings":
         return create_booking(event)
     if method == "POST" and path == "/webhooks/payments":
         return payment_webhook(event)
-    if method == "GET" and path.startswith("/bookings/"):
-        if path.endswith("/quote"):
-            return latest_quote(event, html.escape(path.split("/")[-2]))
-        if path.endswith("/payment"):
-            return latest_payment(event, html.escape(path.split("/")[-2]))
-        return booking_status(event, html.escape(path.rsplit("/", 1)[-1]))
+    if method == "GET" and len(parts) == 3 and parts[0] == "bookings" and parts[2] == "quote" and resource_id(1):
+        return latest_quote(event, resource_id(1))
+    if method == "GET" and len(parts) == 3 and parts[0] == "bookings" and parts[2] == "payment" and resource_id(1):
+        return latest_payment(event, resource_id(1))
+    if method == "GET" and len(parts) == 2 and parts[0] == "bookings" and resource_id(1):
+        return booking_status(event, resource_id(1))
     return response(404, {"error": "Not found."})
 
 
@@ -688,7 +715,9 @@ def lambda_handler(event, context):
     started = time.perf_counter()
     log_event("request_started", method=method, path=path)
     try:
-        result = route_request(event)
+        raw_body = event.get("body") or ""
+        body_size = len(raw_body.encode("utf-8")) if isinstance(raw_body, str) else MAX_REQUEST_BYTES + 1
+        result = response(413, {"error": "Request body exceeds 16 KB limit."}) if body_size > MAX_REQUEST_BYTES else route_request(event)
         duration_ms = round((time.perf_counter() - started) * 1000, 2)
         status_code = int(result.get("statusCode", 500))
         log_event("request_completed", level="ERROR" if status_code >= 500 else "INFO", method=method, path=path, status_code=status_code, duration_ms=duration_ms)

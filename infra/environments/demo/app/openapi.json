@@ -26,7 +26,7 @@
       "post": {
         "tags": ["Public"], "summary": "Create a chauffeur booking request",
         "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BookingRequest"}}}},
-        "responses": {"201": {"description": "Request created; access_token is returned only once", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BookingCreated"}}}}, "400": {"$ref": "#/components/responses/Error"}}
+        "responses": {"201": {"description": "Request created; access_token is returned only once", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/BookingCreated"}}}}, "400": {"$ref": "#/components/responses/Error"}, "413": {"$ref": "#/components/responses/PayloadTooLarge"}}
       }
     },
     "/bookings/{booking_id}": {
@@ -109,7 +109,8 @@
       "Unauthorized": {"description": "Credential missing or invalid", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
       "Forbidden": {"description": "Authenticated role lacks permission", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
       "NotFound": {"description": "Resource or valid customer credential not found", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
-      "Conflict": {"description": "Current workflow state prevents the operation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+      "Conflict": {"description": "Current workflow state prevents the operation", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}},
+      "PayloadTooLarge": {"description": "Request body exceeds the 16 KB application limit", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
     },
     "schemas": {
       "Error": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}},

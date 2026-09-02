@@ -220,6 +220,41 @@ class DemoHandlerTests(unittest.TestCase):
         result = handler.lambda_handler(event("POST", "/bookings", request), None)
         self.assertEqual(result["statusCode"], 400)
 
+    def test_booking_contact_and_trip_boundaries_are_enforced(self):
+        valid = {
+            "name": "Boundary Test", "phone": "+2348000000099", "email": "safe@example.com",
+            "hub": "Lagos", "trip_type": "Local", "pickup": "Ikoyi", "destination": "Lekki",
+            "pickup_at": "2027-01-01T09:00", "end_at": "2027-01-01T12:00",
+        }
+        invalid_cases = [
+            ({"phone": "12345"}, "phone"),
+            ({"email": "not-an-email"}, "email"),
+            ({"pickup_at": "2020-01-01T09:00", "end_at": "2020-01-01T12:00"}, "future"),
+            ({"pickup_at": "2027-01-01T09:00", "end_at": "2027-02-02T09:00"}, "30 days"),
+            ({"pickup_at": "2027-01-01T09:00", "end_at": "2027-01-01T12:00Z"}, "valid pickup"),
+        ]
+        for changes, expected in invalid_cases:
+            with self.subTest(changes=changes):
+                result = handler.lambda_handler(event("POST", "/bookings", {**valid, **changes}), None)
+                self.assertEqual(result["statusCode"], 400)
+                self.assertIn(expected, json.loads(result["body"])["error"].lower())
+
+    def test_oversized_request_is_rejected_before_parsing(self):
+        request = event("POST", "/bookings")
+        request["body"] = "x" * (handler.MAX_REQUEST_BYTES + 1)
+        result = handler.lambda_handler(request, None)
+        self.assertEqual(result["statusCode"], 413)
+
+    def test_resource_routes_require_exact_shape_and_uuid(self):
+        headers = {"x-admin-password": "test-admin-password"}
+        resource_id = "00000000-0000-4000-8000-000000000001"
+        malformed = handler.lambda_handler(
+            event("PATCH", f"/admin/bookings/{resource_id}/unexpected", {"status": "REVIEWING"}, headers), None
+        )
+        invalid_id = handler.lambda_handler(event("GET", "/bookings/not-a-uuid", headers={"x-booking-token": "token"}), None)
+        self.assertEqual(malformed["statusCode"], 404)
+        self.assertEqual(invalid_id["statusCode"], 404)
+
     def test_notification_outbox_can_be_processed(self):
         headers = {"x-admin-password": "test-admin-password"}
         booking = handler.lambda_handler(
