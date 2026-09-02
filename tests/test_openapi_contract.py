@@ -73,6 +73,34 @@ class OpenApiContractTests(unittest.TestCase):
         )
         self.assertIn("destination_state", booking["allOf"][0]["then"]["required"])
 
+    def test_fleet_and_assignment_writes_have_request_contracts(self):
+        expected = {
+            ("/admin/vehicles", "post"): ("VehicleCreate", {"name", "hub"}),
+            ("/admin/chauffeurs", "post"): ("ChauffeurCreate", {"name", "hub"}),
+            ("/admin/bookings/{booking_id}/assignment", "patch"): (
+                "AssignmentRequest", {"vehicle_id", "chauffeur_id"}
+            ),
+        }
+
+        for (path, method), (schema_name, required) in expected.items():
+            with self.subTest(path=path, method=method):
+                operation = self.spec["paths"][path][method]
+                schema = operation["requestBody"]["content"]["application/json"]["schema"]
+                self.assertEqual(schema["$ref"], f"#/components/schemas/{schema_name}")
+                self.assertEqual(
+                    set(self.spec["components"]["schemas"][schema_name]["required"]),
+                    required,
+                )
+
+        chauffeur = self.spec["components"]["schemas"]["ChauffeurCreate"]
+        self.assertEqual(
+            set(chauffeur["properties"]["interstate_eligible"]["enum"]),
+            {"YES", "NO"},
+        )
+        self.assertEqual(
+            chauffeur["properties"]["interstate_eligible"]["default"], "NO"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

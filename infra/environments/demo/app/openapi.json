@@ -62,7 +62,7 @@
     },
     "/admin/bookings/{booking_id}/assignment": {
       "parameters": [{"$ref": "#/components/parameters/BookingId"}],
-      "patch": {"tags": ["Operations"], "summary": "Atomically assign a vehicle and chauffeur", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Resources assigned"}, "409": {"$ref": "#/components/responses/Conflict"}}}
+      "patch": {"tags": ["Operations"], "summary": "Atomically assign a vehicle and chauffeur", "security": [{"staffPassword": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/AssignmentRequest"}}}}, "responses": {"200": {"description": "Resources assigned"}, "409": {"$ref": "#/components/responses/Conflict"}}}
     },
     "/admin/bookings/{booking_id}/quotes": {
       "parameters": [{"$ref": "#/components/parameters/BookingId"}],
@@ -76,7 +76,7 @@
     },
     "/admin/vehicles": {
       "get": {"tags": ["Fleet"], "summary": "List vehicles", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Vehicle list"}}},
-      "post": {"tags": ["Fleet"], "summary": "Create vehicle (administrator only)", "security": [{"staffPassword": []}], "responses": {"201": {"description": "Vehicle created"}, "403": {"$ref": "#/components/responses/Forbidden"}}}
+      "post": {"tags": ["Fleet"], "summary": "Create vehicle (administrator only)", "security": [{"staffPassword": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/VehicleCreate"}}}}, "responses": {"201": {"description": "Vehicle created"}, "403": {"$ref": "#/components/responses/Forbidden"}}}
     },
     "/admin/vehicles/{vehicle_id}": {
       "parameters": [{"name": "vehicle_id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
@@ -84,7 +84,7 @@
     },
     "/admin/chauffeurs": {
       "get": {"tags": ["Fleet"], "summary": "List chauffeurs", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Chauffeur list"}}},
-      "post": {"tags": ["Fleet"], "summary": "Create chauffeur (administrator only)", "security": [{"staffPassword": []}], "responses": {"201": {"description": "Chauffeur created"}, "403": {"$ref": "#/components/responses/Forbidden"}}}
+      "post": {"tags": ["Fleet"], "summary": "Create chauffeur (administrator only)", "security": [{"staffPassword": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/ChauffeurCreate"}}}}, "responses": {"201": {"description": "Chauffeur created"}, "403": {"$ref": "#/components/responses/Forbidden"}}}
     },
     "/admin/chauffeurs/{chauffeur_id}": {
       "parameters": [{"name": "chauffeur_id", "in": "path", "required": true, "schema": {"type": "string", "format": "uuid"}}],
@@ -137,7 +137,10 @@
       },
       "BookingCreated": {"type": "object", "required": ["booking_id", "access_token", "status", "message"], "properties": {"booking_id": {"type": "string", "format": "uuid"}, "access_token": {"type": "string", "writeOnly": true}, "status": {"const": "REQUESTED"}, "message": {"type": "string"}}},
       "BookingCancellation": {"type": "object", "required": ["action"], "additionalProperties": false, "properties": {"action": {"const": "CANCEL"}}},
-      "QuoteDecision": {"type": "object", "required": ["decision"], "additionalProperties": false, "properties": {"decision": {"enum": ["ACCEPTED", "DECLINED"]}}}
+      "QuoteDecision": {"type": "object", "required": ["decision"], "additionalProperties": false, "properties": {"decision": {"enum": ["ACCEPTED", "DECLINED"]}}},
+      "VehicleCreate": {"type": "object", "required": ["name", "hub"], "properties": {"name": {"type": "string", "maxLength": 100}, "hub": {"enum": ["Lagos", "Ogun", "Oyo", "Abuja"]}, "category": {"type": "string", "maxLength": 60}, "ownership": {"type": "string", "maxLength": 30, "default": "Company"}}},
+      "ChauffeurCreate": {"type": "object", "required": ["name", "hub"], "properties": {"name": {"type": "string", "maxLength": 100}, "hub": {"enum": ["Lagos", "Ogun", "Oyo", "Abuja"]}, "interstate_eligible": {"enum": ["YES", "NO"], "default": "NO"}}},
+      "AssignmentRequest": {"type": "object", "required": ["vehicle_id", "chauffeur_id"], "properties": {"vehicle_id": {"type": "string", "format": "uuid"}, "chauffeur_id": {"type": "string", "format": "uuid"}}}
     }
   }
 }
