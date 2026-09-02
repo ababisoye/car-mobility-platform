@@ -32,6 +32,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Emits privacy-conscious JSON logs with request correlation, latency and Lambda release metadata
 - Versions every DynamoDB record and provides an account-guarded, dry-run-first migration workflow
 - Separates administrator and operator permissions with matching server-side and dashboard controls
+- Enforces PBKDF2 staff-hash strength and malformed-configuration limits at deployment and runtime
 - Protects customer booking, quote and payment lookups with one-time access tokens stored only as hashes
 - Makes browser booking retries duplicate-safe without storing plaintext customer tokens
 - Creates each booking request and receipt notification atomically

@@ -141,15 +141,15 @@ os.environ["PAYMENTS_TABLE"] = "test-payments"
 os.environ["PAYMENT_WEBHOOK_SECRET"] = "test-payment-webhook-secret-32-characters"
 os.environ["BOOKING_TTL_DAYS"] = "30"
 os.environ["ALLOWED_ORIGIN"] = "*"
-test_salt = b"unit-test-salt"
-test_digest = hashlib.pbkdf2_hmac("sha256", b"test-admin-password", test_salt, 10_000)
+test_salt = b"unit-test-salt-18"
+test_digest = hashlib.pbkdf2_hmac("sha256", b"test-admin-password", test_salt, 210_000)
 os.environ["ADMIN_PASSWORD_HASH"] = (
-    f"10000:{base64.b64encode(test_salt).decode()}:{base64.b64encode(test_digest).decode()}"
+    f"210000:{base64.b64encode(test_salt).decode()}:{base64.b64encode(test_digest).decode()}"
 )
 operator_salt = b"unit-operator-salt"
-operator_digest = hashlib.pbkdf2_hmac("sha256", b"test-operator-password", operator_salt, 10_000)
+operator_digest = hashlib.pbkdf2_hmac("sha256", b"test-operator-password", operator_salt, 210_000)
 os.environ["OPERATOR_PASSWORD_HASH"] = (
-    f"10000:{base64.b64encode(operator_salt).decode()}:{base64.b64encode(operator_digest).decode()}"
+    f"210000:{base64.b64encode(operator_salt).decode()}:{base64.b64encode(operator_digest).decode()}"
 )
 
 handler_path = (
@@ -411,6 +411,18 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertEqual(page["statusCode"], 200)
         self.assertIn("Operations Dashboard", page["body"])
         self.assertEqual(denied["statusCode"], 401)
+
+    def test_password_hash_policy_rejects_weak_or_malformed_values(self):
+        weak_digest = hashlib.pbkdf2_hmac("sha256", b"test-admin-password", test_salt, 1)
+        weak_hash = f"1:{base64.b64encode(test_salt).decode()}:{base64.b64encode(weak_digest).decode()}"
+        short_salt_hash = f"210000:{base64.b64encode(b'short').decode()}:{base64.b64encode(test_digest).decode()}"
+        short_digest_hash = f"210000:{base64.b64encode(test_salt).decode()}:{base64.b64encode(b'short').decode()}"
+        self.assertTrue(handler.password_matches("test-admin-password", os.environ["ADMIN_PASSWORD_HASH"]))
+        self.assertFalse(handler.password_matches("test-admin-password", weak_hash))
+        self.assertFalse(handler.password_matches("test-admin-password", short_salt_hash))
+        self.assertFalse(handler.password_matches("test-admin-password", short_digest_hash))
+        self.assertFalse(handler.password_matches("test-admin-password", "210000:not-base64!:also-bad!"))
+        self.assertFalse(handler.password_matches("test-admin-password", f"2000001:{base64.b64encode(test_salt).decode()}:{base64.b64encode(test_digest).decode()}"))
 
     def test_operator_can_work_bookings_but_cannot_change_fleet(self):
         operator = {"x-admin-password": "test-operator-password"}

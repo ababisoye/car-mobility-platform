@@ -36,8 +36,8 @@ variable "admin_password_hash" {
   sensitive   = true
 
   validation {
-    condition     = can(regex("^[0-9]+:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$", var.admin_password_hash))
-    error_message = "admin_password_hash must use the iterations:salt:digest format produced by the helper script."
+    condition     = can(regex("^[0-9]+:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$", var.admin_password_hash)) && can(tonumber(split(":", var.admin_password_hash)[0]) >= 210000 && tonumber(split(":", var.admin_password_hash)[0]) <= 2000000)
+    error_message = "admin_password_hash must use the helper's format with 210000 to 2000000 iterations."
   }
 }
 
@@ -59,7 +59,7 @@ variable "operator_password_hash" {
   default     = ""
 
   validation {
-    condition     = var.operator_password_hash == "" || can(regex("^[0-9]+:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$", var.operator_password_hash))
-    error_message = "operator_password_hash must be empty or use the helper's iterations:salt:digest format."
+    condition     = var.operator_password_hash == "" || (can(regex("^[0-9]+:[A-Za-z0-9+/=]+:[A-Za-z0-9+/=]+$", var.operator_password_hash)) && can(tonumber(split(":", var.operator_password_hash)[0]) >= 210000 && tonumber(split(":", var.operator_password_hash)[0]) <= 2000000))
+    error_message = "operator_password_hash must be empty or use the helper's format with 210000 to 2000000 iterations."
   }
 }

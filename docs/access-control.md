@@ -27,6 +27,8 @@ Run `scripts/generate-admin-password-hash.py` separately for the administrator a
 
 `operator_password_hash` is optional. Leaving it empty disables operator login without weakening administrator authentication.
 
+The helper, local preview, Terraform validation and Lambda runtime enforce the same PBKDF2 work-factor floor of 210,000 iterations. Runtime validation also requires at least 16 salt bytes, an exact 32-byte SHA-256 digest and caps iterations at 2,000,000 to prevent an unsafe configuration from weakening authentication or exhausting request time.
+
 ## Production boundary
 
 This model demonstrates authorization but is not production identity. Shared role passwords cannot provide individual attribution, MFA, immediate per-user revocation, account recovery or durable audit history. Before handling real bookings, replace the password verifier with Cognito or another managed identity provider and require:

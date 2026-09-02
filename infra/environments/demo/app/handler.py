@@ -38,6 +38,10 @@ SCHEMA_VERSION = 1
 MAX_REQUEST_BYTES = 16_384
 MAX_IDEMPOTENCY_KEY_LENGTH = 200
 IDEMPOTENCY_NAMESPACE = uuid.UUID("79a04631-d896-4ef0-8874-932ead4f4588")
+MIN_PBKDF2_ITERATIONS = 210_000
+MAX_PBKDF2_ITERATIONS = 2_000_000
+MIN_PASSWORD_SALT_BYTES = 16
+PASSWORD_DIGEST_BYTES = 32
 OPENAPI_TEXT = Path(__file__).with_name("openapi.json").read_text(encoding="utf-8")
 REQUEST_ID = ContextVar("request_id", default="unknown")
 ACTOR_ROLE = ContextVar("actor_role", default="PUBLIC")
@@ -274,15 +278,22 @@ def password_matches(password, encoded_hash):
     if not encoded_hash:
         return False
     try:
-        iterations, salt, expected = encoded_hash.split(":", 2)
+        iterations_text, salt_text, expected_text = encoded_hash.split(":", 2)
+        iterations = int(iterations_text)
+        salt = base64.b64decode(salt_text, validate=True)
+        expected = base64.b64decode(expected_text, validate=True)
+        if not MIN_PBKDF2_ITERATIONS <= iterations <= MAX_PBKDF2_ITERATIONS:
+            return False
+        if len(salt) < MIN_PASSWORD_SALT_BYTES or len(expected) != PASSWORD_DIGEST_BYTES:
+            return False
         actual = hashlib.pbkdf2_hmac(
             "sha256",
             password.encode("utf-8"),
-            base64.b64decode(salt),
-            int(iterations),
+            salt,
+            iterations,
         )
-        return hmac.compare_digest(actual, base64.b64decode(expected))
-    except (ValueError, TypeError):
+        return hmac.compare_digest(actual, expected)
+    except (ValueError, TypeError, base64.binascii.Error):
         return False
 
 

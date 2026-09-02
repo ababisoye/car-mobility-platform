@@ -98,16 +98,16 @@ os.environ.setdefault("NOTIFICATIONS_TABLE", "local-notifications")
 os.environ.setdefault("PAYMENTS_TABLE", "local-payments")
 os.environ.setdefault("PAYMENT_WEBHOOK_SECRET", "local-payment-webhook-secret-32-characters")
 local_salt = b"local-preview-only"
-local_digest = hashlib.pbkdf2_hmac("sha256", b"demo-admin", local_salt, 10_000)
+local_digest = hashlib.pbkdf2_hmac("sha256", b"demo-admin", local_salt, 210_000)
 local_operator_salt = b"local-operator-only"
-local_operator_digest = hashlib.pbkdf2_hmac("sha256", b"demo-operator", local_operator_salt, 10_000)
+local_operator_digest = hashlib.pbkdf2_hmac("sha256", b"demo-operator", local_operator_salt, 210_000)
 os.environ.setdefault(
     "ADMIN_PASSWORD_HASH",
-    f"10000:{base64.b64encode(local_salt).decode()}:{base64.b64encode(local_digest).decode()}",
+    f"210000:{base64.b64encode(local_salt).decode()}:{base64.b64encode(local_digest).decode()}",
 )
 os.environ.setdefault(
     "OPERATOR_PASSWORD_HASH",
-    f"10000:{base64.b64encode(local_operator_salt).decode()}:{base64.b64encode(local_operator_digest).decode()}",
+    f"210000:{base64.b64encode(local_operator_salt).decode()}:{base64.b64encode(local_operator_digest).decode()}",
 )
 
 project_root = Path(__file__).resolve().parents[1]
