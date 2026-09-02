@@ -70,18 +70,43 @@ TABLES = {
 class MemoryDynamoClient:
     def transact_write_items(self, TransactItems):
         for transaction in TransactItems:
+            if "Put" in transaction:
+                put = transaction["Put"]
+                item = {
+                    key: (int(value["N"]) if "N" in value else value["S"])
+                    for key, value in put["Item"].items()
+                }
+                table = TABLES[put["TableName"]]
+                item_key = next(key for key in item if key.endswith("_id"))
+                table.items[item[item_key]] = item
+                continue
             update = transaction["Update"]
             table = TABLES[update["TableName"]]
             key = next(iter(update["Key"].values()))["S"]
             item = table.items[key]
             values = update["ExpressionAttributeValues"]
-            if update["TableName"] == "local-bookings" and ":status" in values:
-                item.update(status=values[":status"]["S"], resources_released_at=int(values[":updated"]["N"]), updated_at=int(values[":updated"]["N"]))
+            if update["TableName"] == "local-payments":
+                item.update(status=values[":status"]["S"], updated_at=int(values[":updated"]["N"]))
+            elif update["TableName"] == "local-bookings" and ":quoted" in values and ":version" in values:
+                item.update(status=values[":quoted"]["S"], latest_quote_id=values[":quote_id"]["S"], quote_version=int(values[":version"]["N"]), quote_amount_ngn=int(values[":amount"]["N"]), quote_status=values[":issued"]["S"], accepted_quote_id=values[":empty"]["S"], updated_at=int(values[":updated"]["N"]))
+            elif update["TableName"] == "local-bookings" and ":decision_status" in values:
+                item.update(status=values[":decision_status"]["S"], quote_status=values[":decision"]["S"], accepted_quote_id=values[":accepted_quote_id"]["S"], quote_decided_at=int(values[":updated"]["N"]), updated_at=int(values[":updated"]["N"]))
+            elif update["TableName"] == "local-bookings" and ":booking_status" in values:
+                item.update(status=values[":booking_status"]["S"], payment_status=values[":payment_status"]["S"], updated_at=int(values[":updated"]["N"]))
+            elif update["TableName"] == "local-bookings" and ":payment_id" in values:
+                item.update(payment_id=values[":payment_id"]["S"], payment_status=values[":pending"]["S"], updated_at=int(values[":updated"]["N"]))
+            elif update["TableName"] == "local-bookings" and ":in_progress" in values:
+                item.update(status=values[":in_progress"]["S"], updated_at=int(values[":updated"]["N"]))
+            elif update["TableName"] == "local-bookings" and ":status" in values:
+                item.update(status=values[":status"]["S"], updated_at=int(values[":updated"]["N"]))
+                if "resources_released_at" in update["UpdateExpression"]:
+                    item["resources_released_at"] = int(values[":updated"]["N"])
             elif update["TableName"] == "local-bookings":
                 item.update(status="ASSIGNED", vehicle_id=values[":vehicle"]["S"], chauffeur_id=values[":chauffeur"]["S"], updated_at=int(values[":updated"]["N"]))
             else:
-                target = ":available" if "= :available" in update["UpdateExpression"] else (":reserved" if ":reserved" in values else ":assigned")
-                item["status"] = values[target]["S"]
+                target = ":available" if "= :available" in update["UpdateExpression"] else (":on_trip" if ":on_trip" in values else (":reserved" if ":reserved" in values else ":assigned"))
+                if target in values:
+                    item["status"] = values[target]["S"]
                 item["updated_at"] = int(values[":updated"]["N"])
         return {}
 

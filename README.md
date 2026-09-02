@@ -46,6 +46,7 @@ Contributions are welcome through the [contribution guide](CONTRIBUTING.md). Rep
 - Automated Python tests plus Terraform formatting and validation in CI
 - Freezes application time in date-sensitive tests so CI remains reproducible
 - Isolates every application test with fresh in-memory DynamoDB tables
+- Smoke-tests the local preview's transactional booking path without AWS
 - Enforces zero-funding service, capacity, concurrency, retention and IAM guardrails in CI
 - Pins third-party CI actions to immutable commits with least-privilege workflow tests
 - Blocks common secrets and sensitive deployment artifacts from the public repository in CI
