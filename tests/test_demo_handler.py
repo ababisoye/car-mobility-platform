@@ -458,6 +458,13 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertIn("Operations Dashboard", page["body"])
         self.assertEqual(denied["statusCode"], 401)
 
+    def test_admin_dashboard_contains_internal_margin_controls(self):
+        page = handler.lambda_handler(event("GET", "/admin"), None)
+        self.assertEqual(page["statusCode"], 200)
+        self.assertIn("Estimated internal cost (optional)", page["body"])
+        self.assertIn("Estimated margin:", page["body"])
+        self.assertIn("payload.estimated_cost_ngn", page["body"])
+
     def test_password_hash_policy_rejects_weak_or_malformed_values(self):
         weak_digest = hashlib.pbkdf2_hmac("sha256", b"test-admin-password", test_salt, 1)
         weak_hash = f"1:{base64.b64encode(test_salt).decode()}:{base64.b64encode(weak_digest).decode()}"
