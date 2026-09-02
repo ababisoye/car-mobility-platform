@@ -247,6 +247,7 @@ class DemoHandlerTests(unittest.TestCase):
             "trip_type": "Interstate",
             "pickup": "Victoria Island",
             "destination": "Ibadan",
+            "destination_state": "Oyo",
             "pickup_at": "2026-09-10T09:00",
             "end_at": "2026-09-10T18:00",
             "vehicle_preference": "Executive SUV",
@@ -363,6 +364,22 @@ class DemoHandlerTests(unittest.TestCase):
                 result = handler.lambda_handler(event("POST", "/bookings", {**valid, **changes}), None)
                 self.assertEqual(result["statusCode"], 400)
                 self.assertIn(expected, json.loads(result["body"])["error"].lower())
+
+    def test_interstate_booking_requires_a_different_valid_state(self):
+        request = {
+            "name": "Interstate Test", "phone": "+2348000000199", "hub": "Lagos",
+            "trip_type": "Interstate", "pickup": "Ikoyi", "destination": "Ibadan",
+            "pickup_at": "2027-01-01T09:00", "end_at": "2027-01-01T18:00",
+        }
+        invalid = (("", "valid destination"), ("Atlantis", "valid destination"), ("Lagos", "outside"))
+        for destination_state, expected in invalid:
+            with self.subTest(destination_state=destination_state):
+                result = handler.lambda_handler(event("POST", "/bookings", {**request, "destination_state": destination_state}), None)
+                self.assertEqual(result["statusCode"], 400)
+                self.assertIn(expected, json.loads(result["body"])["error"].lower())
+
+        accepted = handler.lambda_handler(event("POST", "/bookings", {**request, "destination_state": "Oyo"}), None)
+        self.assertEqual(accepted["statusCode"], 201)
 
     def test_oversized_request_is_rejected_before_parsing(self):
         request = event("POST", "/bookings")
@@ -683,7 +700,7 @@ class DemoHandlerTests(unittest.TestCase):
     def test_quotes_are_versioned_and_latest_is_public(self):
         headers = {"x-admin-password": "test-admin-password"}
         booking = handler.lambda_handler(
-            event("POST", "/bookings", {"name": "Quote Test", "phone": "+2348000000004", "hub": "Lagos", "trip_type": "Interstate", "pickup": "Ikoyi", "destination": "Abeokuta", "pickup_at": "2027-01-10T09:00", "end_at": "2027-01-10T18:00"}),
+            event("POST", "/bookings", {"name": "Quote Test", "phone": "+2348000000004", "hub": "Lagos", "trip_type": "Interstate", "pickup": "Ikoyi", "destination": "Abeokuta", "destination_state": "Ogun", "pickup_at": "2027-01-10T09:00", "end_at": "2027-01-10T18:00"}),
             None,
         )
         booking_body = json.loads(booking["body"])

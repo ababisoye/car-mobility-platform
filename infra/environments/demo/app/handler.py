@@ -47,6 +47,13 @@ REQUEST_ID = ContextVar("request_id", default="unknown")
 ACTOR_ROLE = ContextVar("actor_role", default="PUBLIC")
 HUBS = {"Lagos", "Ogun", "Oyo", "Abuja"}
 TRIP_TYPES = {"Local", "Interstate"}
+HUB_STATES = {"Lagos": "Lagos", "Ogun": "Ogun", "Oyo": "Oyo", "Abuja": "FCT"}
+NIGERIAN_STATES = {
+    "Abia", "Adamawa", "Akwa Ibom", "Anambra", "Bauchi", "Bayelsa", "Benue", "Borno",
+    "Cross River", "Delta", "Ebonyi", "Edo", "Ekiti", "Enugu", "FCT", "Gombe", "Imo",
+    "Jigawa", "Kaduna", "Kano", "Katsina", "Kebbi", "Kogi", "Kwara", "Lagos", "Nasarawa",
+    "Niger", "Ogun", "Ondo", "Osun", "Oyo", "Plateau", "Rivers", "Sokoto", "Taraba", "Yobe", "Zamfara",
+}
 BOOKING_STATUSES = {"REQUESTED", "REVIEWING", "QUOTED", "CONFIRMED", "ASSIGNED", "IN_PROGRESS", "COMPLETED", "DECLINED", "CANCELLED"}
 BOOKING_TRANSITIONS = {
     "REQUESTED": {"REVIEWING", "DECLINED", "CANCELLED"},
@@ -183,6 +190,7 @@ def create_booking(event):
         "trip_type": clean(data.get("trip_type"), 20),
         "pickup": clean(data.get("pickup"), 200),
         "destination": clean(data.get("destination"), 200),
+        "destination_state": clean(data.get("destination_state"), 30),
         "pickup_at": clean(data.get("pickup_at"), 40),
         "end_at": clean(data.get("end_at"), 40),
         "vehicle_preference": clean(data.get("vehicle_preference"), 100),
@@ -195,6 +203,13 @@ def create_booking(event):
         return response(400, {"error": "Complete all required fields.", "fields": missing})
     if booking["hub"] not in HUBS or booking["trip_type"] not in TRIP_TYPES:
         return response(400, {"error": "Select a valid hub and trip type."})
+    if booking["trip_type"] == "Interstate":
+        if booking["destination_state"] not in NIGERIAN_STATES:
+            return response(400, {"error": "Select a valid destination state for an interstate trip."})
+        if booking["destination_state"] == HUB_STATES[booking["hub"]]:
+            return response(400, {"error": "An interstate destination must be outside the fleet hub state."})
+    elif booking["destination_state"] and booking["destination_state"] != HUB_STATES[booking["hub"]]:
+        return response(400, {"error": "Select Interstate when the destination is outside the fleet hub state."})
     phone_digits = re.sub(r"\D", "", booking["phone"])
     if not 10 <= len(phone_digits) <= 15 or not re.fullmatch(r"\+?[0-9 ()-]+", booking["phone"]):
         return response(400, {"error": "Provide a valid phone number."})
@@ -902,6 +917,7 @@ def page():
 <div><label for="end_at">Expected end date and time *</label><input id="end_at" name="end_at" type="datetime-local" required></div>
 <div><label for="pickup">Pickup location *</label><input id="pickup" name="pickup" maxlength="200" required></div>
 <div><label for="destination">Destination *</label><input id="destination" name="destination" maxlength="200" required></div>
+<div><label for="destination_state">Destination state (required for interstate)</label><input id="destination_state" name="destination_state" maxlength="30" placeholder="Example: Oyo or FCT"></div>
 <div class="full"><label for="vehicle_preference">Vehicle preference</label><input id="vehicle_preference" name="vehicle_preference" maxlength="100" placeholder="Example: executive SUV"></div>
 <div class="full"><label for="notes">Notes</label><textarea id="notes" name="notes" maxlength="500"></textarea></div>
 <div class="full"><button id="submit" type="submit">Request a quote</button></div></div></form><div id="result" class="result" role="status"></div>

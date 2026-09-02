@@ -130,8 +130,10 @@
           "name": {"type": "string", "maxLength": 100}, "phone": {"type": "string", "maxLength": 30}, "email": {"type": "string", "format": "email", "maxLength": 150},
           "hub": {"enum": ["Lagos", "Ogun", "Oyo", "Abuja"]}, "trip_type": {"enum": ["Local", "Interstate"]},
           "pickup": {"type": "string", "maxLength": 200}, "destination": {"type": "string", "maxLength": 200},
+          "destination_state": {"enum": ["Abia", "Adamawa", "Akwa Ibom", "Anambra", "Bauchi", "Bayelsa", "Benue", "Borno", "Cross River", "Delta", "Ebonyi", "Edo", "Ekiti", "Enugu", "FCT", "Gombe", "Imo", "Jigawa", "Kaduna", "Kano", "Katsina", "Kebbi", "Kogi", "Kwara", "Lagos", "Nasarawa", "Niger", "Ogun", "Ondo", "Osun", "Oyo", "Plateau", "Rivers", "Sokoto", "Taraba", "Yobe", "Zamfara"]},
           "pickup_at": {"type": "string"}, "end_at": {"type": "string"}, "vehicle_preference": {"type": "string", "maxLength": 100}, "notes": {"type": "string", "maxLength": 500}
-        }
+        },
+        "allOf": [{"if": {"properties": {"trip_type": {"const": "Interstate"}}, "required": ["trip_type"]}, "then": {"required": ["destination_state"]}}]
       },
       "BookingCreated": {"type": "object", "required": ["booking_id", "access_token", "status", "message"], "properties": {"booking_id": {"type": "string", "format": "uuid"}, "access_token": {"type": "string", "writeOnly": true}, "status": {"const": "REQUESTED"}, "message": {"type": "string"}}},
       "BookingCancellation": {"type": "object", "required": ["action"], "additionalProperties": false, "properties": {"action": {"const": "CANCEL"}}},

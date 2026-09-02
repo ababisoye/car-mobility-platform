@@ -14,6 +14,7 @@ Contributions are welcome through the [contribution guide](CONTRIBUTING.md). Rep
 - Reduced the public request path to Lambda Function URL and DynamoDB
 - Implemented infrastructure as code for demo, non-production and production stages
 - Added booking validation, short-lived demo records and security headers
+- Validates interstate destinations against Nigeria's states and rejects same-state interstate requests
 - Added a password-protected operations view for booking review and status updates
 - Added vehicle and chauffeur availability management across all four hubs
 - Added atomic booking assignment that reserves a vehicle and chauffeur and queues its notification together
