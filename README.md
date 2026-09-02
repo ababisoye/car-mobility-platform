@@ -75,6 +75,8 @@ The zero-funding path deliberately omits API Gateway, a load balancer, NAT Gatew
 
 See the [architecture decisions](docs/architecture-decisions.md) for the demo and production deployment views, deliberate omissions, accepted limitations and promotion conditions.
 
+The [threat model](docs/threat-model.md) identifies assets, trust boundaries, abuse cases, existing mitigations and the risks deliberately accepted only for the demonstration.
+
 Assignment uses a DynamoDB transaction to change the booking, vehicle and chauffeur and queue the customer notification together. A concurrent request fails instead of partially assigning, double-reserving a resource or losing its notification.
 
 ## Booking interface

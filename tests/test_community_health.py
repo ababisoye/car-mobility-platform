@@ -43,6 +43,32 @@ class CommunityHealthTests(unittest.TestCase):
             with self.subTest(decision=decision):
                 self.assertIn(decision, decisions)
 
+    def test_threat_model_documents_boundaries_and_residual_risk(self):
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        threat_model = (ROOT / "docs/threat-model.md").read_text(encoding="utf-8")
+
+        self.assertIn("[threat model](docs/threat-model.md)", readme)
+        for section in (
+            "Assets",
+            "Trust boundaries",
+            "Abuse cases and controls",
+            "Security invariants",
+            "Risk acceptance and review triggers",
+        ):
+            with self.subTest(section=section):
+                self.assertIn(f"## {section}", threat_model)
+
+        for threat in (
+            "Spoofing",
+            "Tampering",
+            "Repudiation",
+            "Information disclosure",
+            "Denial of service",
+            "Elevation of privilege",
+        ):
+            with self.subTest(threat=threat):
+                self.assertIn(f"| {threat} |", threat_model)
+
     def test_security_reports_are_directed_to_a_private_channel(self):
         security_policy = (ROOT / "SECURITY.md").read_text(encoding="utf-8")
         issue_config = (
