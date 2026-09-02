@@ -32,6 +32,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Publishes a versioned OpenAPI 3.1 contract with automated route and security checks
 - Automated Python tests plus Terraform formatting and validation in CI
 - Enforces zero-funding service, capacity, concurrency, retention and IAM guardrails in CI
+- Pins third-party CI actions to immutable commits with least-privilege workflow tests
 - Documented a production growth path without forcing production cost on the MVP
 
 ## Architecture
@@ -96,6 +97,8 @@ The staff dashboard reads `GET /admin/summary` for aggregate booking, fleet and 
 AWS Budgets only sends alerts; it is not a hard spending cap. A new AWS Free account plan prevents charges while the plan is active, but it ends after six months or when credits are exhausted. Keep a local export of anything important.
 
 CI also evaluates the [zero-funding architecture policy](docs/zero-funding-policy.md). Unreviewed service types, additional DynamoDB tables, higher capacity, larger Lambda limits, longer log retention or wildcard IAM permissions fail the test suite before merge.
+
+External GitHub Actions are pinned to full commit SHAs, workflow permissions are tested, and Dependabot proposes weekly Actions and Terraform updates. See [CI/CD supply-chain controls](docs/ci-supply-chain.md).
 
 ## Current scope
 
