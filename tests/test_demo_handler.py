@@ -206,6 +206,10 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertIn("x-idempotency-key", result["body"])
         self.assertIn("Check my booking", result["body"])
         self.assertIn("x-booking-token", result["body"])
+        self.assertIn('<select id="destination_state"', result["body"])
+        for state in handler.NIGERIAN_STATES:
+            with self.subTest(state=state):
+                self.assertIn(f'<option value="{state}">{state}</option>', result["body"])
 
     def test_requests_have_structured_safe_correlation_logs(self):
         request = event("POST", "/bookings", {"name": "Do Not Log This Name", "phone": "+2348111111111", "hub": "Lagos", "trip_type": "Local", "pickup": "Ikoyi", "destination": "Airport", "pickup_at": "2027-05-01T09:00", "end_at": "2027-05-01T12:00"})
