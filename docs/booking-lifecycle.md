@@ -6,8 +6,9 @@ When an assigned booking becomes `CANCELLED`, `DECLINED` or `COMPLETED`, one Dyn
 
 1. changes the booking status using its current status as a concurrency condition;
 2. changes the assigned vehicle from `RESERVED` to `AVAILABLE`;
-3. changes the assigned chauffeur from `ASSIGNED` to `AVAILABLE`.
+3. changes the assigned chauffeur from `ASSIGNED` to `AVAILABLE`;
+4. queues the customer-facing terminal-status notification.
 
 If any condition has changed, the whole transaction fails and staff are asked to refresh. The booking keeps its vehicle and chauffeur identifiers for operational history, together with `resources_released_at`, while overlap checks ignore terminal bookings.
 
-Terminal bookings cannot receive new assignments. Each terminal change also writes a customer-facing event to the notification outbox without invoking a paid delivery provider.
+Terminal bookings cannot receive new assignments. Terminal changes without assigned fleet still update the booking and notification together. The notification outbox does not invoke a paid delivery provider.

@@ -16,7 +16,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Added vehicle and chauffeur availability management across all four hubs
 - Added atomic booking assignment that reserves a vehicle and chauffeur and queues its notification together
 - Rejects unavailable, wrong-hub and overlapping resource assignments
-- Atomically releases assigned fleet resources when trips complete or bookings terminate
+- Atomically releases assigned fleet resources and queues notifications when trips complete or bookings terminate
 - Enforces an explicit booking state machine and exposes only valid dashboard transitions
 - Preserves immutable quote revisions and exposes only the latest customer quote
 - Lets token-authenticated customers accept or decline only the latest unexpired quote

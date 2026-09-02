@@ -99,7 +99,9 @@ class FakeDynamoClient:
             elif update["TableName"] == "test-bookings" and ":payment_id" in values:
                 item.update(payment_id=values[":payment_id"]["S"], payment_status=values[":pending"]["S"], updated_at=int(values[":updated"]["N"]))
             elif update["TableName"] == "test-bookings" and ":status" in values:
-                item.update(status=values[":status"]["S"], resources_released_at=int(values[":updated"]["N"]), updated_at=int(values[":updated"]["N"]))
+                item.update(status=values[":status"]["S"], updated_at=int(values[":updated"]["N"]))
+                if "resources_released_at" in update["UpdateExpression"]:
+                    item["resources_released_at"] = int(values[":updated"]["N"])
             elif update["TableName"] == "test-bookings":
                 item.update(status="ASSIGNED", vehicle_id=values[":vehicle"]["S"], chauffeur_id=values[":chauffeur"]["S"], updated_at=int(values[":updated"]["N"]))
             else:
@@ -495,6 +497,11 @@ class DemoHandlerTests(unittest.TestCase):
             event("PATCH", f"/bookings/{booking_body['booking_id']}", {"action": "CANCEL"}, {"x-booking-token": booking_body["access_token"]}), None
         )
         self.assertEqual(json.loads(cancelled["body"])["status"], "CANCELLED")
+        cancellation_notifications = [
+            item for item in FAKE_TABLES["test-notifications"].items.values()
+            if item.get("booking_id") == booking_body["booking_id"] and item.get("event_type") == "BOOKING_CANCELLED"
+        ]
+        self.assertEqual(len(cancellation_notifications), 1)
         self.assertEqual(FAKE_TABLES["test-vehicles"].items[vehicle_id]["status"], "AVAILABLE")
         self.assertEqual(FAKE_TABLES["test-chauffeurs"].items[chauffeur_id]["status"], "AVAILABLE")
         terminal_assignment = handler.lambda_handler(
@@ -542,6 +549,31 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertEqual(FAKE_TABLES["test-bookings"].items[booking_id]["status"], "CONFIRMED")
         self.assertEqual(FAKE_TABLES["test-vehicles"].items[vehicle_id]["status"], "AVAILABLE")
         self.assertEqual(FAKE_TABLES["test-chauffeurs"].items[chauffeur_id]["status"], "AVAILABLE")
+        self.assertEqual(set(FAKE_TABLES["test-notifications"].items), notifications_before)
+
+    def test_failed_terminal_transaction_changes_nothing(self):
+        created = handler.lambda_handler(event("POST", "/bookings", {
+            "name": "Terminal Failure", "phone": "+2348000000040", "hub": "Ogun", "trip_type": "Local",
+            "pickup": "Abeokuta", "destination": "Ibara", "pickup_at": "2027-07-20T09:00", "end_at": "2027-07-20T12:00",
+        }), None)
+        booking = json.loads(created["body"])
+
+        class TransactionCancelled(Exception):
+            response = {"Error": {"Code": "TransactionCanceledException"}}
+
+        class FailingClient:
+            def transact_write_items(self, **_kwargs):
+                raise TransactionCancelled()
+
+        notifications_before = set(FAKE_TABLES["test-notifications"].items)
+        real_client = handler.DYNAMO_CLIENT
+        handler.DYNAMO_CLIENT = FailingClient()
+        try:
+            result = handler.lambda_handler(event("PATCH", f"/bookings/{booking['booking_id']}", {"action": "CANCEL"}, {"x-booking-token": booking["access_token"]}), None)
+        finally:
+            handler.DYNAMO_CLIENT = real_client
+        self.assertEqual(result["statusCode"], 409)
+        self.assertEqual(FAKE_TABLES["test-bookings"].items[booking["booking_id"]]["status"], "REQUESTED")
         self.assertEqual(set(FAKE_TABLES["test-notifications"].items), notifications_before)
 
     def test_admin_can_manage_vehicle_availability(self):

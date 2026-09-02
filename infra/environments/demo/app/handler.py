@@ -354,6 +354,13 @@ def change_booking_status(booking, status):
     release_resources = status in {"DECLINED", "CANCELLED", "COMPLETED"} and all(
         booking.get(field) for field in ("vehicle_id", "chauffeur_id")
     )
+    terminal = status in {"DECLINED", "CANCELLED", "COMPLETED"}
+    messages = {
+        "DECLINED": "The booking request was declined.",
+        "CANCELLED": "The booking was cancelled.",
+        "COMPLETED": "The trip was completed. Thank you for riding with us.",
+    }
+    notification = notification_record(booking_id, f"BOOKING_{status}", messages[status]) if terminal else None
     try:
         if release_resources:
             DYNAMO_CLIENT.transact_write_items(
@@ -361,9 +368,16 @@ def change_booking_status(booking, status):
                     {"Update": {"TableName": BOOKINGS_TABLE_NAME, "Key": {"booking_id": {"S": booking_id}}, "UpdateExpression": "SET #s = :status, resources_released_at = :updated, updated_at = :updated", "ConditionExpression": "#s = :current_status", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":status": {"S": status}, ":current_status": {"S": current_status}, ":updated": {"N": str(now)}}}},
                     {"Update": {"TableName": VEHICLES_TABLE_NAME, "Key": {"vehicle_id": {"S": booking["vehicle_id"]}}, "UpdateExpression": "SET #s = :available, updated_at = :updated", "ConditionExpression": "#s = :reserved", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":available": {"S": "AVAILABLE"}, ":reserved": {"S": "RESERVED"}, ":updated": {"N": str(now)}}}},
                     {"Update": {"TableName": CHAUFFEURS_TABLE_NAME, "Key": {"chauffeur_id": {"S": booking["chauffeur_id"]}}, "UpdateExpression": "SET #s = :available, updated_at = :updated", "ConditionExpression": "#s = :assigned", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":available": {"S": "AVAILABLE"}, ":assigned": {"S": "ASSIGNED"}, ":updated": {"N": str(now)}}}},
+                    {"Put": {"TableName": NOTIFICATIONS_TABLE_NAME, "Item": dynamodb_item(notification), "ConditionExpression": "attribute_not_exists(notification_id)"}},
                 ]
             )
             updated = {**booking, "status": status, "resources_released_at": now, "updated_at": now}
+        elif terminal:
+            DYNAMO_CLIENT.transact_write_items(TransactItems=[
+                {"Update": {"TableName": BOOKINGS_TABLE_NAME, "Key": {"booking_id": {"S": booking_id}}, "UpdateExpression": "SET #s = :status, updated_at = :updated", "ConditionExpression": "#s = :current_status", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":status": {"S": status}, ":current_status": {"S": current_status}, ":updated": {"N": str(now)}}}},
+                {"Put": {"TableName": NOTIFICATIONS_TABLE_NAME, "Item": dynamodb_item(notification), "ConditionExpression": "attribute_not_exists(notification_id)"}},
+            ])
+            updated = {**booking, "status": status, "updated_at": now}
         else:
             result = TABLE.update_item(
                 Key={"booking_id": booking_id},
@@ -379,13 +393,6 @@ def change_booking_status(booking, status):
         if error_response.get("Error", {}).get("Code") in {"ConditionalCheckFailedException", "TransactionCanceledException"}:
             return None
         raise
-    if status in {"DECLINED", "CANCELLED", "COMPLETED"}:
-        messages = {
-            "DECLINED": "The booking request was declined.",
-            "CANCELLED": "The booking was cancelled.",
-            "COMPLETED": "The trip was completed. Thank you for riding with us.",
-        }
-        queue_notification(booking_id, f"BOOKING_{status}", messages[status])
     log_event("booking_status_changed", booking_id=booking_id, previous_status=current_status, status=status, resources_released=release_resources)
     return updated
 
