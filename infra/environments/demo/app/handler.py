@@ -119,9 +119,9 @@ def booking_access_allowed(event, booking):
     return bool(supplied and expected and hmac.compare_digest(actual, expected))
 
 
-def queue_notification(booking_id, event_type, message, audience="CUSTOMER"):
+def notification_record(booking_id, event_type, message, audience="CUSTOMER"):
     now = int(time.time())
-    item = {
+    return {
         "schema_version": SCHEMA_VERSION,
         "notification_id": str(uuid.uuid4()),
         "booking_id": booking_id,
@@ -133,8 +133,19 @@ def queue_notification(booking_id, event_type, message, audience="CUSTOMER"):
         "created_at": now,
         "expires_at": now + (30 * 86400),
     }
+
+
+def queue_notification(booking_id, event_type, message, audience="CUSTOMER"):
+    item = notification_record(booking_id, event_type, message, audience)
     NOTIFICATIONS.put_item(Item=item, ConditionExpression="attribute_not_exists(notification_id)")
     return item
+
+
+def dynamodb_item(item):
+    return {
+        key: ({"N": str(value)} if isinstance(value, (int, Decimal)) else {"S": str(value)})
+        for key, value in item.items()
+    }
 
 
 def create_booking(event):
@@ -209,17 +220,22 @@ def create_booking(event):
     }
     if idempotency_key:
         item.update(idempotency_hash=idempotency_hash, request_fingerprint=request_fingerprint)
+    notification = notification_record(booking_id, "BOOKING_REQUESTED", "Your booking request was received and is awaiting review.")
     try:
-        TABLE.put_item(Item=item, ConditionExpression="attribute_not_exists(booking_id)")
+        DYNAMO_CLIENT.transact_write_items(TransactItems=[
+            {"Put": {"TableName": BOOKINGS_TABLE_NAME, "Item": dynamodb_item(item), "ConditionExpression": "attribute_not_exists(booking_id)"}},
+            {"Put": {"TableName": NOTIFICATIONS_TABLE_NAME, "Item": dynamodb_item(notification), "ConditionExpression": "attribute_not_exists(notification_id)"}},
+        ])
     except Exception as error:
         error_response = getattr(error, "response", {})
-        if error_response.get("Error", {}).get("Code") != "ConditionalCheckFailedException" or not idempotency_key:
+        if error_response.get("Error", {}).get("Code") != "TransactionCanceledException" or not idempotency_key:
             raise
         existing = TABLE.get_item(Key={"booking_id": booking_id}).get("Item")
-        if not existing or existing.get("request_fingerprint") != request_fingerprint or not booking_access_allowed(event, existing):
+        if not existing:
+            return response(409, {"error": "The booking request was not committed; retry the same request."})
+        if existing.get("request_fingerprint") != request_fingerprint or not booking_access_allowed(event, existing):
             return response(409, {"error": "This idempotency key is already associated with another booking request."})
         return response(200, {"booking_id": booking_id, "access_token": access_token, "status": existing["status"], "message": "The original booking request was returned; no duplicate was created.", "duplicate": True})
-    queue_notification(booking_id, "BOOKING_REQUESTED", "Your booking request was received and is awaiting review.")
     log_event("booking_created", booking_id=booking_id, hub=booking["hub"], trip_type=booking["trip_type"])
     return response(201, {"booking_id": booking_id, "access_token": access_token, "status": "REQUESTED", "message": "Your demo request has been recorded. Save the access token; it is shown only once."})
 

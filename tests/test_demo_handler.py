@@ -283,6 +283,31 @@ class DemoHandlerTests(unittest.TestCase):
         result = handler.lambda_handler(event("POST", "/bookings", request, {"x-idempotency-key": "short", "x-booking-token": "short"}), None)
         self.assertEqual(result["statusCode"], 400)
 
+    def test_failed_booking_transaction_creates_nothing(self):
+        class TransactionCancelled(Exception):
+            response = {"Error": {"Code": "TransactionCanceledException"}}
+
+        class FailingClient:
+            def transact_write_items(self, **_kwargs):
+                raise TransactionCancelled()
+
+        request = {
+            "name": "Atomic Booking", "phone": "+2348000000030", "hub": "Oyo", "trip_type": "Local",
+            "pickup": "Bodija", "destination": "Challenge", "pickup_at": "2027-07-15T09:00", "end_at": "2027-07-15T12:00",
+        }
+        headers = {"x-idempotency-key": "atomic-booking-key-1234", "x-booking-token": "atomic-booking-token-with-32-characters"}
+        bookings_before = set(FAKE_TABLES["test-bookings"].items)
+        notifications_before = set(FAKE_TABLES["test-notifications"].items)
+        real_client = handler.DYNAMO_CLIENT
+        handler.DYNAMO_CLIENT = FailingClient()
+        try:
+            result = handler.lambda_handler(event("POST", "/bookings", request, headers), None)
+        finally:
+            handler.DYNAMO_CLIENT = real_client
+        self.assertEqual(result["statusCode"], 409)
+        self.assertEqual(set(FAKE_TABLES["test-bookings"].items), bookings_before)
+        self.assertEqual(set(FAKE_TABLES["test-notifications"].items), notifications_before)
+
     def test_invalid_hub_is_rejected(self):
         request = {
             "name": "Demo Customer",
