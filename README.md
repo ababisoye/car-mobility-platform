@@ -31,6 +31,7 @@ The initial operating hubs are Lagos, Ogun, Oyo and Abuja, with local and approv
 - Provides privacy-safe operational summaries for pipeline, fleet and payment visibility
 - Publishes a versioned OpenAPI 3.1 contract with automated route and security checks
 - Automated Python tests plus Terraform formatting and validation in CI
+- Enforces zero-funding service, capacity, concurrency, retention and IAM guardrails in CI
 - Documented a production growth path without forcing production cost on the MVP
 
 ## Architecture
@@ -93,6 +94,8 @@ The machine-readable API contract is stored at `infra/environments/demo/app/open
 The staff dashboard reads `GET /admin/summary` for aggregate booking, fleet and payment cards. It scans at most 100 records per existing table, returns no customer-level fields and clearly identifies this bounded scope. This is suitable for the zero-funding demonstration, not a replacement for paginated production reporting. See [operational reporting](docs/operational-reporting.md).
 
 AWS Budgets only sends alerts; it is not a hard spending cap. A new AWS Free account plan prevents charges while the plan is active, but it ends after six months or when credits are exhausted. Keep a local export of anything important.
+
+CI also evaluates the [zero-funding architecture policy](docs/zero-funding-policy.md). Unreviewed service types, additional DynamoDB tables, higher capacity, larger Lambda limits, longer log retention or wildcard IAM permissions fail the test suite before merge.
 
 ## Current scope
 
