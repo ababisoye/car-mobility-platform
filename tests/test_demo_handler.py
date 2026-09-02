@@ -108,6 +108,8 @@ class FakeDynamoClient:
                 item.update(status=values[":booking_status"]["S"], payment_status=values[":payment_status"]["S"], updated_at=int(values[":updated"]["N"]))
             elif update["TableName"] == "test-bookings" and ":payment_id" in values:
                 item.update(payment_id=values[":payment_id"]["S"], payment_status=values[":pending"]["S"], updated_at=int(values[":updated"]["N"]))
+            elif update["TableName"] == "test-bookings" and ":in_progress" in values:
+                item.update(status=values[":in_progress"]["S"], updated_at=int(values[":updated"]["N"]))
             elif update["TableName"] == "test-bookings" and ":status" in values:
                 item.update(status=values[":status"]["S"], updated_at=int(values[":updated"]["N"]))
                 if "resources_released_at" in update["UpdateExpression"]:
@@ -115,8 +117,9 @@ class FakeDynamoClient:
             elif update["TableName"] == "test-bookings":
                 item.update(status="ASSIGNED", vehicle_id=values[":vehicle"]["S"], chauffeur_id=values[":chauffeur"]["S"], updated_at=int(values[":updated"]["N"]))
             else:
-                target = ":available" if "= :available" in update["UpdateExpression"] else (":reserved" if ":reserved" in values else ":assigned")
-                item["status"] = values[target]["S"]
+                target = ":available" if "= :available" in update["UpdateExpression"] else (":on_trip" if ":on_trip" in values else (":reserved" if ":reserved" in values else ":assigned"))
+                if target in values:
+                    item["status"] = values[target]["S"]
                 item["updated_at"] = int(values[":updated"]["N"])
         return {}
 
@@ -535,6 +538,12 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertEqual(reassigned["statusCode"], 200)
         second_booking_id = json.loads(overlapping["body"])["booking_id"]
         handler.lambda_handler(event("PATCH", f"/admin/bookings/{second_booking_id}", {"status": "IN_PROGRESS"}, headers), None)
+        self.assertEqual(FAKE_TABLES["test-vehicles"].items[vehicle_id]["status"], "ON_TRIP")
+        trip_notifications = [
+            item for item in FAKE_TABLES["test-notifications"].items.values()
+            if item.get("booking_id") == second_booking_id and item.get("event_type") == "TRIP_STARTED"
+        ]
+        self.assertEqual(len(trip_notifications), 1)
         completed = handler.lambda_handler(event("PATCH", f"/admin/bookings/{second_booking_id}", {"status": "COMPLETED"}, headers), None)
         self.assertEqual(json.loads(completed["body"])["status"], "COMPLETED")
         self.assertEqual(FAKE_TABLES["test-vehicles"].items[vehicle_id]["status"], "AVAILABLE")
@@ -594,6 +603,34 @@ class DemoHandlerTests(unittest.TestCase):
             handler.DYNAMO_CLIENT = real_client
         self.assertEqual(result["statusCode"], 409)
         self.assertEqual(FAKE_TABLES["test-bookings"].items[booking["booking_id"]]["status"], "REQUESTED")
+        self.assertEqual(set(FAKE_TABLES["test-notifications"].items), notifications_before)
+
+    def test_failed_trip_start_transaction_changes_nothing(self):
+        booking_id = "80000000-0000-4000-8000-000000000008"
+        vehicle_id = "90000000-0000-4000-8000-000000000009"
+        chauffeur_id = "a0000000-0000-4000-8000-00000000000a"
+        FAKE_TABLES["test-bookings"].items[booking_id] = {"booking_id": booking_id, "status": "ASSIGNED", "vehicle_id": vehicle_id, "chauffeur_id": chauffeur_id}
+        FAKE_TABLES["test-vehicles"].items[vehicle_id] = {"vehicle_id": vehicle_id, "status": "RESERVED"}
+        FAKE_TABLES["test-chauffeurs"].items[chauffeur_id] = {"chauffeur_id": chauffeur_id, "status": "ASSIGNED"}
+
+        class TransactionCancelled(Exception):
+            response = {"Error": {"Code": "TransactionCanceledException"}}
+
+        class FailingClient:
+            def transact_write_items(self, **_kwargs):
+                raise TransactionCancelled()
+
+        notifications_before = set(FAKE_TABLES["test-notifications"].items)
+        real_client = handler.DYNAMO_CLIENT
+        handler.DYNAMO_CLIENT = FailingClient()
+        try:
+            result = handler.lambda_handler(event("PATCH", f"/admin/bookings/{booking_id}", {"status": "IN_PROGRESS"}, {"x-admin-password": "test-admin-password"}), None)
+        finally:
+            handler.DYNAMO_CLIENT = real_client
+        self.assertEqual(result["statusCode"], 409)
+        self.assertEqual(FAKE_TABLES["test-bookings"].items[booking_id]["status"], "ASSIGNED")
+        self.assertEqual(FAKE_TABLES["test-vehicles"].items[vehicle_id]["status"], "RESERVED")
+        self.assertEqual(FAKE_TABLES["test-chauffeurs"].items[chauffeur_id]["status"], "ASSIGNED")
         self.assertEqual(set(FAKE_TABLES["test-notifications"].items), notifications_before)
 
     def test_admin_can_manage_vehicle_availability(self):

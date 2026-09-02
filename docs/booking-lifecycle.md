@@ -12,3 +12,5 @@ When an assigned booking becomes `CANCELLED`, `DECLINED` or `COMPLETED`, one Dyn
 If any condition has changed, the whole transaction fails and staff are asked to refresh. The booking keeps its vehicle and chauffeur identifiers for operational history, together with `resources_released_at`, while overlap checks ignore terminal bookings.
 
 Terminal bookings cannot receive new assignments. Terminal changes without assigned fleet still update the booking and notification together. The notification outbox does not invoke a paid delivery provider.
+
+Starting a trip is also transactional: the booking enters `IN_PROGRESS`, the vehicle moves from `RESERVED` to `ON_TRIP`, the assigned chauffeur is revalidated and the customer notification is queued together. Completion accepts the vehicle only from the expected reserved/on-trip states before releasing it.
