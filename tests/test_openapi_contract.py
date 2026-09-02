@@ -21,7 +21,7 @@ class OpenApiContractTests(unittest.TestCase):
         expected = {
             ("GET", "/"), ("GET", "/health"), ("GET", "/openapi.json"), ("POST", "/bookings"),
             ("GET", "/bookings/{booking_id}"), ("PATCH", "/bookings/{booking_id}"), ("GET", "/bookings/{booking_id}/quote"), ("PATCH", "/bookings/{booking_id}/quote"), ("GET", "/bookings/{booking_id}/payment"),
-            ("GET", "/admin"), ("GET", "/admin/session"), ("GET", "/admin/bookings"), ("PATCH", "/admin/bookings/{booking_id}"),
+            ("GET", "/admin"), ("GET", "/admin/session"), ("GET", "/admin/summary"), ("GET", "/admin/bookings"), ("PATCH", "/admin/bookings/{booking_id}"),
             ("PATCH", "/admin/bookings/{booking_id}/assignment"), ("GET", "/admin/bookings/{booking_id}/quotes"), ("POST", "/admin/bookings/{booking_id}/quotes"),
             ("GET", "/admin/bookings/{booking_id}/payments"), ("POST", "/admin/bookings/{booking_id}/payments"),
             ("GET", "/admin/vehicles"), ("POST", "/admin/vehicles"), ("PATCH", "/admin/vehicles/{vehicle_id}"),
@@ -40,6 +40,7 @@ class OpenApiContractTests(unittest.TestCase):
         self.assertEqual(self.spec["paths"]["/bookings/{booking_id}"]["patch"]["security"], [{"bookingToken": []}])
         self.assertEqual(self.spec["paths"]["/bookings/{booking_id}/quote"]["patch"]["security"], [{"bookingToken": []}])
         self.assertEqual(self.spec["paths"]["/admin/bookings"]["get"]["security"], [{"staffPassword": []}])
+        self.assertEqual(self.spec["paths"]["/admin/summary"]["get"]["security"], [{"staffPassword": []}])
         self.assertEqual(self.spec["paths"]["/webhooks/payments"]["post"]["security"], [{"webhookSignature": []}])
 
     def test_contract_contains_no_example_credentials(self):

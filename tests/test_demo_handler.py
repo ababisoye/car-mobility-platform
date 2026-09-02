@@ -312,6 +312,17 @@ class DemoHandlerTests(unittest.TestCase):
         session = handler.lambda_handler(event("GET", "/admin/session", headers={"x-admin-password": "test-admin-password"}), None)
         self.assertEqual(json.loads(session["body"])["role"], "ADMIN")
 
+    def test_staff_summary_contains_only_bounded_aggregates(self):
+        denied = handler.lambda_handler(event("GET", "/admin/summary"), None)
+        result = handler.lambda_handler(event("GET", "/admin/summary", headers={"x-admin-password": "test-operator-password"}), None)
+        payload = json.loads(result["body"])
+        self.assertEqual(denied["statusCode"], 401)
+        self.assertEqual(result["statusCode"], 200)
+        self.assertEqual(payload["scope"]["maximum_records_per_table"], 100)
+        self.assertEqual(sum(payload["bookings"]["by_status"].values()), payload["bookings"]["total"])
+        self.assertEqual(sum(payload["fleet"]["vehicles"]["by_status"].values()), payload["fleet"]["vehicles"]["total"])
+        self.assertNotIn("customer_token_hash", result["body"])
+
     def test_admin_can_list_and_update_booking(self):
         headers = {"x-admin-password": "test-admin-password"}
         created = handler.lambda_handler(

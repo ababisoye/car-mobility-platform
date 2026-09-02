@@ -49,6 +49,9 @@
     "/admin/session": {
       "get": {"tags": ["Operations"], "summary": "Resolve the current staff role", "security": [{"staffPassword": []}], "responses": {"200": {"description": "ADMIN or OPERATOR"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
     },
+    "/admin/summary": {
+      "get": {"tags": ["Operations"], "summary": "Read bounded operational aggregates", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Booking, fleet and payment summary"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
+    },
     "/admin/bookings": {
       "get": {"tags": ["Operations"], "summary": "List booking requests", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Booking list"}, "401": {"$ref": "#/components/responses/Unauthorized"}}}
     },
