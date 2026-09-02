@@ -261,6 +261,8 @@ Server-side lifecycle rules prevent skipped stages: confirmation requires an acc
 
 Quote issuance and customer decisions also use conditional, all-or-nothing writes so booking state, immutable revisions and notifications cannot diverge. See [quote consistency](docs/quote-consistency.md).
 
+Staff can optionally record an estimated trip cost with each immutable quote. The platform calculates an internal estimated margin without exposing cost data to customers. See [quote profitability](docs/quote-profitability.md).
+
 Destroy the demo when it is no longer needed:
 
 ```powershell

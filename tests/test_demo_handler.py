@@ -736,13 +736,33 @@ class DemoHandlerTests(unittest.TestCase):
         booking_id = booking_body["booking_id"]
         customer_headers = {"x-booking-token": booking_body["access_token"]}
         first = handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/quotes", {"amount_ngn": 250000, "valid_until": "2027-01-05T18:00", "notes": "Initial estimate"}, headers), None)
-        second = handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/quotes", {"amount_ngn": 275000, "valid_until": "2027-01-06T18:00", "notes": "Includes interstate tolls"}, headers), None)
+        second = handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/quotes", {"amount_ngn": 275000, "estimated_cost_ngn": 220000, "valid_until": "2027-01-06T18:00", "notes": "Includes interstate tolls"}, headers), None)
         history = handler.lambda_handler(event("GET", f"/admin/bookings/{booking_id}/quotes", headers=headers), None)
         latest = handler.lambda_handler(event("GET", f"/bookings/{booking_id}/quote", headers=customer_headers), None)
+        first_body = json.loads(first["body"])
+        second_body = json.loads(second["body"])
+        history_body = json.loads(history["body"])
+        latest_body = json.loads(latest["body"])
         self.assertEqual(first["statusCode"], 201)
-        self.assertEqual(json.loads(second["body"])["version"], 2)
-        self.assertEqual(json.loads(history["body"])["count"], 2)
-        self.assertEqual(json.loads(latest["body"])["amount_ngn"], 275000)
+        self.assertEqual(first_body["cost_status"], "NOT_ESTIMATED")
+        self.assertNotIn("estimated_margin_ngn", first_body)
+        self.assertEqual(second_body["version"], 2)
+        self.assertEqual(second_body["estimated_margin_ngn"], 55000)
+        self.assertEqual(second_body["estimated_margin_bps"], 2000)
+        self.assertEqual(history_body["count"], 2)
+        self.assertEqual(history_body["quotes"][0]["estimated_cost_ngn"], 220000)
+        self.assertEqual(latest_body["amount_ngn"], 275000)
+        for internal_field in ("cost_status", "estimated_cost_ngn", "estimated_margin_ngn", "estimated_margin_bps"):
+            self.assertNotIn(internal_field, latest_body)
+
+    def test_quote_rejects_invalid_estimated_cost(self):
+        staff = {"x-admin-password": "test-admin-password"}
+        created = handler.lambda_handler(event("POST", "/bookings", {"name": "Cost Validation", "phone": "+2348000000024", "hub": "Lagos", "trip_type": "Local", "pickup": "Ikoyi", "destination": "Lekki", "pickup_at": "2027-09-01T09:00", "end_at": "2027-09-01T12:00"}), None)
+        booking_id = json.loads(created["body"])["booking_id"]
+        for value in ("unknown", -1, 100_000_001):
+            with self.subTest(value=value):
+                result = handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/quotes", {"amount_ngn": 150000, "estimated_cost_ngn": value, "valid_until": "2027-08-25T18:00"}, staff), None)
+                self.assertEqual(result["statusCode"], 400)
 
     def test_failed_quote_issue_transaction_creates_nothing(self):
         staff = {"x-admin-password": "test-admin-password"}

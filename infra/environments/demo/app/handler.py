@@ -660,6 +660,14 @@ def manage_quotes(event, booking_id):
         return response(400, {"error": "Provide a whole-number NGN amount and valid expiry time."})
     if amount_ngn < 1 or amount_ngn > 100_000_000:
         return response(400, {"error": "Quote amount must be between NGN 1 and NGN 100,000,000."})
+    estimated_cost_ngn = None
+    if data.get("estimated_cost_ngn") is not None:
+        try:
+            estimated_cost_ngn = int(data["estimated_cost_ngn"])
+        except (TypeError, ValueError):
+            return response(400, {"error": "Estimated cost must be a whole-number NGN amount."})
+        if estimated_cost_ngn < 0 or estimated_cost_ngn > 100_000_000:
+            return response(400, {"error": "Estimated cost must be between NGN 0 and NGN 100,000,000."})
     if valid_time <= current_datetime(valid_time.tzinfo):
         return response(400, {"error": "Quote expiry must be in the future."})
     version = max((int(item.get("version", 0)) for item in quotes), default=0) + 1
@@ -676,12 +684,21 @@ def manage_quotes(event, booking_id):
         "status": "ISSUED",
         "created_at": now,
         "expires_at": int(valid_time.timestamp()) + (30 * 86400),
+        "cost_status": "NOT_ESTIMATED",
     }
+    if estimated_cost_ngn is not None:
+        estimated_margin_ngn = amount_ngn - estimated_cost_ngn
+        quote.update(
+            cost_status="ESTIMATED",
+            estimated_cost_ngn=estimated_cost_ngn,
+            estimated_margin_ngn=estimated_margin_ngn,
+            estimated_margin_bps=(estimated_margin_ngn * 10_000) // amount_ngn,
+        )
     notification_id = str(uuid.uuid4())
     notification_message = f"Quote version {version} was issued for NGN {amount_ngn:,}."
     try:
         DYNAMO_CLIENT.transact_write_items(TransactItems=[
-            {"Put": {"TableName": QUOTES_TABLE_NAME, "Item": {"schema_version": {"N": str(SCHEMA_VERSION)}, "quote_id": {"S": quote_id}, "booking_id": {"S": booking_id}, "version": {"N": str(version)}, "amount_ngn": {"N": str(amount_ngn)}, "valid_until": {"S": valid_until}, "notes": {"S": quote["notes"]}, "status": {"S": "ISSUED"}, "created_at": {"N": str(now)}, "expires_at": {"N": str(quote["expires_at"])}}, "ConditionExpression": "attribute_not_exists(quote_id)"}},
+            {"Put": {"TableName": QUOTES_TABLE_NAME, "Item": dynamodb_item(quote), "ConditionExpression": "attribute_not_exists(quote_id)"}},
             {"Update": {"TableName": BOOKINGS_TABLE_NAME, "Key": {"booking_id": {"S": booking_id}}, "UpdateExpression": "SET #s = :quoted, latest_quote_id = :quote_id, quote_version = :version, quote_amount_ngn = :amount, quote_status = :issued, accepted_quote_id = :empty, updated_at = :updated", "ConditionExpression": "#s = :current_status", "ExpressionAttributeNames": {"#s": "status"}, "ExpressionAttributeValues": {":quoted": {"S": "QUOTED"}, ":quote_id": {"S": quote_id}, ":version": {"N": str(version)}, ":amount": {"N": str(amount_ngn)}, ":issued": {"S": "ISSUED"}, ":empty": {"S": ""}, ":updated": {"N": str(now)}, ":current_status": {"S": booking["status"]}}}},
             {"Put": {"TableName": NOTIFICATIONS_TABLE_NAME, "Item": {"schema_version": {"N": str(SCHEMA_VERSION)}, "notification_id": {"S": notification_id}, "booking_id": {"S": booking_id}, "event_type": {"S": "QUOTE_ISSUED"}, "audience": {"S": "CUSTOMER"}, "channel": {"S": "PENDING_PROVIDER"}, "message": {"S": notification_message}, "status": {"S": "PENDING"}, "created_at": {"N": str(now)}, "expires_at": {"N": str(now + (30 * 86400))}}, "ConditionExpression": "attribute_not_exists(notification_id)"}},
         ])

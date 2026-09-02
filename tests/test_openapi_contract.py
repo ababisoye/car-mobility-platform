@@ -101,6 +101,15 @@ class OpenApiContractTests(unittest.TestCase):
             chauffeur["properties"]["interstate_eligible"]["default"], "NO"
         )
 
+    def test_quote_write_contract_documents_internal_cost_as_optional(self):
+        operation = self.spec["paths"]["/admin/bookings/{booking_id}/quotes"]["post"]
+        schema = operation["requestBody"]["content"]["application/json"]["schema"]
+        self.assertEqual(schema["$ref"], "#/components/schemas/QuoteCreate")
+        quote = self.spec["components"]["schemas"]["QuoteCreate"]
+        self.assertEqual(set(quote["required"]), {"amount_ngn", "valid_until"})
+        self.assertNotIn("estimated_cost_ngn", quote["required"])
+        self.assertEqual(quote["properties"]["estimated_cost_ngn"]["minimum"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

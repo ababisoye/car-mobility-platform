@@ -67,7 +67,7 @@
     "/admin/bookings/{booking_id}/quotes": {
       "parameters": [{"$ref": "#/components/parameters/BookingId"}],
       "get": {"tags": ["Operations"], "summary": "List immutable quote revisions", "security": [{"staffPassword": []}], "responses": {"200": {"description": "Quote history"}}},
-      "post": {"tags": ["Operations"], "summary": "Issue a new quote revision", "security": [{"staffPassword": []}], "responses": {"201": {"description": "Quote issued"}, "400": {"$ref": "#/components/responses/Error"}}}
+      "post": {"tags": ["Operations"], "summary": "Issue a new quote revision with optional internal profitability estimate", "security": [{"staffPassword": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QuoteCreate"}}}}, "responses": {"201": {"description": "Quote issued"}, "400": {"$ref": "#/components/responses/Error"}}}
     },
     "/admin/bookings/{booking_id}/payments": {
       "parameters": [{"$ref": "#/components/parameters/BookingId"}],
@@ -138,6 +138,7 @@
       "BookingCreated": {"type": "object", "required": ["booking_id", "access_token", "status", "message"], "properties": {"booking_id": {"type": "string", "format": "uuid"}, "access_token": {"type": "string", "writeOnly": true}, "status": {"const": "REQUESTED"}, "message": {"type": "string"}}},
       "BookingCancellation": {"type": "object", "required": ["action"], "additionalProperties": false, "properties": {"action": {"const": "CANCEL"}}},
       "QuoteDecision": {"type": "object", "required": ["decision"], "additionalProperties": false, "properties": {"decision": {"enum": ["ACCEPTED", "DECLINED"]}}},
+      "QuoteCreate": {"type": "object", "required": ["amount_ngn", "valid_until"], "additionalProperties": false, "properties": {"amount_ngn": {"type": "integer", "minimum": 1, "maximum": 100000000}, "valid_until": {"type": "string", "format": "date-time"}, "notes": {"type": "string", "maxLength": 500}, "estimated_cost_ngn": {"type": "integer", "minimum": 0, "maximum": 100000000, "description": "Staff-only estimated trip cost. Omit when the cost is not yet known; customer quote responses never expose it or the calculated margin."}}},
       "VehicleCreate": {"type": "object", "required": ["name", "hub"], "properties": {"name": {"type": "string", "maxLength": 100}, "hub": {"enum": ["Lagos", "Ogun", "Oyo", "Abuja"]}, "category": {"type": "string", "maxLength": 60}, "ownership": {"type": "string", "maxLength": 30, "default": "Company"}}},
       "ChauffeurCreate": {"type": "object", "required": ["name", "hub"], "properties": {"name": {"type": "string", "maxLength": 100}, "hub": {"enum": ["Lagos", "Ogun", "Oyo", "Abuja"]}, "interstate_eligible": {"enum": ["YES", "NO"], "default": "NO"}}},
       "AssignmentRequest": {"type": "object", "required": ["vehicle_id", "chauffeur_id"], "properties": {"vehicle_id": {"type": "string", "format": "uuid"}, "chauffeur_id": {"type": "string", "format": "uuid"}}}
