@@ -40,6 +40,15 @@ class FakeTable:
                 latest_quote_id=ExpressionAttributeValues[":quote_id"],
                 quote_version=ExpressionAttributeValues[":version"],
                 quote_amount_ngn=ExpressionAttributeValues[":amount"],
+                quote_status=ExpressionAttributeValues[":issued"],
+                accepted_quote_id=ExpressionAttributeValues[":empty"],
+            )
+        if ":decision" in ExpressionAttributeValues:
+            item.update(
+                status=ExpressionAttributeValues[":decision_status"],
+                quote_status=ExpressionAttributeValues[":decision"],
+                accepted_quote_id=ExpressionAttributeValues[":accepted_quote_id"],
+                quote_decided_at=ExpressionAttributeValues[":updated"],
             )
         if ":payment_id" in ExpressionAttributeValues:
             item["payment_id"] = ExpressionAttributeValues[":payment_id"]
@@ -395,6 +404,27 @@ class DemoHandlerTests(unittest.TestCase):
         self.assertEqual(json.loads(history["body"])["count"], 2)
         self.assertEqual(json.loads(latest["body"])["amount_ngn"], 275000)
 
+    def test_customer_can_accept_or_decline_latest_quote_once(self):
+        staff = {"x-admin-password": "test-admin-password"}
+        decisions = (("ACCEPTED", "QUOTED"), ("DECLINED", "REVIEWING"))
+        for index, (decision, expected_booking_status) in enumerate(decisions):
+            with self.subTest(decision=decision):
+                booking = handler.lambda_handler(
+                    event("POST", "/bookings", {"name": f"Decision {index}", "phone": f"+234800000001{index}", "hub": "Lagos", "trip_type": "Local", "pickup": "Ikoyi", "destination": "Lekki", "pickup_at": "2027-04-01T09:00", "end_at": "2027-04-01T12:00"}), None
+                )
+                created = json.loads(booking["body"])
+                booking_id = created["booking_id"]
+                customer = {"x-booking-token": created["access_token"]}
+                handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/quotes", {"amount_ngn": 200000 + index, "valid_until": "2027-03-25T18:00"}, staff), None)
+                denied = handler.lambda_handler(event("PATCH", f"/bookings/{booking_id}/quote", {"decision": decision}, {"x-booking-token": "wrong"}), None)
+                decided = handler.lambda_handler(event("PATCH", f"/bookings/{booking_id}/quote", {"decision": decision}, customer), None)
+                repeated = handler.lambda_handler(event("PATCH", f"/bookings/{booking_id}/quote", {"decision": decision}, customer), None)
+                latest = handler.lambda_handler(event("GET", f"/bookings/{booking_id}/quote", headers=customer), None)
+                self.assertEqual(denied["statusCode"], 404)
+                self.assertEqual(json.loads(decided["body"])["status"], expected_booking_status)
+                self.assertEqual(json.loads(latest["body"])["status"], decision)
+                self.assertEqual(repeated["statusCode"], 409)
+
     def test_signed_payment_webhook_is_idempotent(self):
         headers = {"x-admin-password": "test-admin-password"}
         booking = handler.lambda_handler(
@@ -405,6 +435,9 @@ class DemoHandlerTests(unittest.TestCase):
         booking_id = booking_body["booking_id"]
         customer_headers = {"x-booking-token": booking_body["access_token"]}
         handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/quotes", {"amount_ngn": 180000, "valid_until": "2027-02-25T18:00"}, headers), None)
+        blocked = handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/payments", {}, headers), None)
+        self.assertEqual(blocked["statusCode"], 409)
+        handler.lambda_handler(event("PATCH", f"/bookings/{booking_id}/quote", {"decision": "ACCEPTED"}, customer_headers), None)
         created = handler.lambda_handler(event("POST", f"/admin/bookings/{booking_id}/payments", {}, headers), None)
         self.assertEqual(created["statusCode"], 201)
         payment_id = json.loads(created["body"])["payment_id"]

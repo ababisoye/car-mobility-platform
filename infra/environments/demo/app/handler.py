@@ -421,7 +421,7 @@ def manage_quotes(event, booking_id):
         return response(400, {"error": "Provide a whole-number NGN amount and valid expiry time."})
     if amount_ngn < 1 or amount_ngn > 100_000_000:
         return response(400, {"error": "Quote amount must be between NGN 1 and NGN 100,000,000."})
-    if valid_time <= datetime.now():
+    if valid_time <= datetime.now(valid_time.tzinfo):
         return response(400, {"error": "Quote expiry must be in the future."})
     version = max((int(item.get("version", 0)) for item in quotes), default=0) + 1
     quote_id = f"{booking_id}#{version}"
@@ -447,9 +447,9 @@ def manage_quotes(event, booking_id):
         raise
     TABLE.update_item(
         Key={"booking_id": booking_id},
-        UpdateExpression="SET #s = :quoted, latest_quote_id = :quote_id, quote_version = :version, quote_amount_ngn = :amount, updated_at = :updated",
+        UpdateExpression="SET #s = :quoted, latest_quote_id = :quote_id, quote_version = :version, quote_amount_ngn = :amount, quote_status = :issued, accepted_quote_id = :empty, updated_at = :updated",
         ExpressionAttributeNames={"#s": "status"},
-        ExpressionAttributeValues={":quoted": "QUOTED", ":quote_id": quote_id, ":version": version, ":amount": amount_ngn, ":updated": now},
+        ExpressionAttributeValues={":quoted": "QUOTED", ":quote_id": quote_id, ":version": version, ":amount": amount_ngn, ":issued": "ISSUED", ":empty": "", ":updated": now},
     )
     queue_notification(booking_id, "QUOTE_ISSUED", f"Quote version {version} was issued for NGN {amount_ngn:,}.")
     log_event("quote_issued", booking_id=booking_id, quote_id=quote_id, version=version)
@@ -464,7 +464,54 @@ def latest_quote(event, booking_id):
     if not quotes:
         return response(404, {"error": "No quote has been issued for this booking."})
     quote = quotes[0]
-    return response(200, {key: quote[key] for key in ("booking_id", "version", "amount_ngn", "valid_until", "notes", "status")})
+    public_quote = {key: quote[key] for key in ("booking_id", "version", "amount_ngn", "valid_until", "notes", "status")}
+    public_quote["status"] = booking.get("quote_status", public_quote["status"])
+    return response(200, public_quote)
+
+
+def decide_quote(event, booking_id):
+    booking = TABLE.get_item(Key={"booking_id": booking_id}).get("Item")
+    if not booking_access_allowed(event, booking):
+        return response(404, {"error": "Booking request not found."})
+    try:
+        data = json.loads(event.get("body") or "{}")
+    except json.JSONDecodeError:
+        return response(400, {"error": "Request body must be valid JSON."})
+    decision = clean(data.get("decision"), 20).upper()
+    if decision not in {"ACCEPTED", "DECLINED"}:
+        return response(400, {"error": "Decision must be ACCEPTED or DECLINED."})
+    quotes = booking_quotes(booking_id)
+    if not quotes or booking.get("latest_quote_id") != quotes[0].get("quote_id"):
+        return response(409, {"error": "No current quote is available for a decision."})
+    quote = quotes[0]
+    try:
+        valid_time = datetime.fromisoformat(quote["valid_until"])
+        expired = valid_time <= datetime.now(valid_time.tzinfo)
+    except (TypeError, ValueError):
+        expired = True
+    if expired:
+        return response(409, {"error": "The latest quote has expired; request a revised quote."})
+    if booking.get("quote_status") in {"ACCEPTED", "DECLINED"}:
+        return response(409, {"error": "The latest quote already has a decision."})
+    now = int(time.time())
+    booking_status = "QUOTED" if decision == "ACCEPTED" else "REVIEWING"
+    accepted_quote_id = quote["quote_id"] if decision == "ACCEPTED" else ""
+    try:
+        TABLE.update_item(
+            Key={"booking_id": booking_id},
+            UpdateExpression="SET #s = :decision_status, quote_status = :decision, accepted_quote_id = :accepted_quote_id, quote_decided_at = :updated, updated_at = :updated",
+            ConditionExpression="attribute_exists(booking_id) AND latest_quote_id = :quote_id AND quote_status = :issued",
+            ExpressionAttributeNames={"#s": "status"},
+            ExpressionAttributeValues={":decision_status": booking_status, ":decision": decision, ":accepted_quote_id": accepted_quote_id, ":updated": now, ":quote_id": quote["quote_id"], ":issued": "ISSUED"},
+        )
+    except Exception as error:
+        error_response = getattr(error, "response", {})
+        if error_response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return response(409, {"error": "The quote changed while the decision was submitted; refresh and try again."})
+        raise
+    queue_notification(booking_id, f"QUOTE_{decision}", f"The customer {decision.lower()} quote version {quote['version']}.", "STAFF")
+    log_event("quote_decided", booking_id=booking_id, quote_id=quote["quote_id"], decision=decision)
+    return response(200, {"booking_id": booking_id, "quote_version": quote["version"], "quote_status": decision, "status": booking_status})
 
 
 def booking_payments(booking_id):
@@ -489,8 +536,11 @@ def manage_payments(event, booking_id):
     if any(item.get("status") == "PENDING" for item in payments):
         return response(409, {"error": "A payment request is already pending for this booking."})
     quote = quotes[0]
-    if datetime.fromisoformat(quote["valid_until"]) <= datetime.now():
+    valid_time = datetime.fromisoformat(quote["valid_until"])
+    if valid_time <= datetime.now(valid_time.tzinfo):
         return response(409, {"error": "The latest quote has expired; issue a new quote first."})
+    if booking.get("quote_status") != "ACCEPTED" or booking.get("accepted_quote_id") != quote.get("quote_id"):
+        return response(409, {"error": "The customer must accept the latest quote before payment is requested."})
     now = int(time.time())
     payment_id = str(uuid.uuid4())
     item = {
@@ -601,7 +651,7 @@ def page():
 <title>Luxury Chauffeur Booking Demo</title>
 <style>
 :root{color-scheme:dark;--gold:#d8b36a;--ink:#111;--panel:#1b1d21;--muted:#aeb4be}*{box-sizing:border-box}body{margin:0;background:#0d0e10;color:#f7f7f5;font:16px/1.5 system-ui,sans-serif}.wrap{max-width:900px;margin:auto;padding:32px 18px 60px}header{padding:46px 0 22px}small,.eyebrow{color:var(--gold);letter-spacing:.16em;text-transform:uppercase}h1{font:700 clamp(2rem,7vw,4.4rem)/1.03 Georgia,serif;margin:.4rem 0 1rem;max-width:780px}.lead{color:var(--muted);max-width:650px}.notice{border-left:3px solid var(--gold);background:#17191c;padding:12px 16px;margin:24px 0;color:#ddd}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.full{grid-column:1/-1}label{display:block;color:#ddd;font-size:.9rem;margin-bottom:5px}input,select,textarea{width:100%;border:1px solid #373b42;border-radius:8px;background:#121418;color:white;padding:12px;font:inherit}textarea{min-height:95px;resize:vertical}button{border:0;border-radius:8px;background:var(--gold);color:var(--ink);font-weight:800;padding:13px 20px;cursor:pointer}button:disabled{opacity:.55}.result{margin-top:18px;padding:14px;border-radius:8px;background:#17191c;display:none}.fine{color:#868d98;font-size:.82rem;margin-top:22px}@media(max-width:640px){.grid{grid-template-columns:1fr}.full{grid-column:auto}}
-</style><style>.result{white-space:pre-wrap;overflow-wrap:anywhere}.lookup{margin-top:42px;padding:22px;border:1px solid #30343a;border-radius:12px;background:var(--panel)}.lookup h2{font:700 1.8rem Georgia,serif;margin:0 0 8px}.lookup-grid{display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end}@media(max-width:640px){.lookup-grid{grid-template-columns:1fr}}</style></head><body><main class="wrap"><header><div class="eyebrow">Nigeria · Demonstration</div><h1>Chauffeur-driven luxury, requested in minutes.</h1><p class="lead">Submit a demonstration request from Lagos, Ogun, Oyo or Abuja for a local or approved interstate journey.</p></header>
+</style><style>.result{white-space:pre-wrap;overflow-wrap:anywhere}.lookup{margin-top:42px;padding:22px;border:1px solid #30343a;border-radius:12px;background:var(--panel)}.lookup h2{font:700 1.8rem Georgia,serif;margin:0 0 8px}.lookup-grid{display:grid;grid-template-columns:1fr 1fr auto;gap:12px;align-items:end}.decision-actions{display:none;gap:10px;margin-top:14px}.decision-actions.visible{display:flex}.decision-actions .decline{background:#30343a;color:#fff}@media(max-width:640px){.lookup-grid{grid-template-columns:1fr}}</style></head><body><main class="wrap"><header><div class="eyebrow">Nigeria · Demonstration</div><h1>Chauffeur-driven luxury, requested in minutes.</h1><p class="lead">Submit a demonstration request from Lagos, Ogun, Oyo or Abuja for a local or approved interstate journey.</p></header>
 <div class="notice"><strong>Demo only.</strong> This form does not confirm a vehicle, collect payment or create a binding rental.</div>
 <form id="booking"><div class="grid">
 <div><label for="name">Name *</label><input id="name" name="name" maxlength="100" required></div>
@@ -617,8 +667,8 @@ def page():
 <div class="full"><label for="notes">Notes</label><textarea id="notes" name="notes" maxlength="500"></textarea></div>
 <div class="full"><button id="submit" type="submit">Request a quote</button></div></div></form><div id="result" class="result" role="status"></div>
 <p class="fine">Requests are automatically deleted after 30 days. Do not submit identity documents, payment details or sensitive personal information.</p>
-<section class="lookup"><div class="eyebrow">Customer access</div><h2>Check my booking</h2><p class="lead">Use the reference and private token shown when the request was created.</p><form id="lookup" class="lookup-grid"><label>Booking reference<input id="lookup-reference" required autocomplete="off"></label><label>Access token<input id="lookup-token" type="password" required autocomplete="off"></label><button id="lookup-submit" type="submit">Check status</button></form><div id="lookup-result" class="result" role="status"></div></section></main>
-<script>const f=document.querySelector('#booking'),b=document.querySelector('#submit'),r=document.querySelector('#result'),lookup=document.querySelector('#lookup'),lookupButton=document.querySelector('#lookup-submit'),lookupResult=document.querySelector('#lookup-result'),reference=document.querySelector('#lookup-reference'),token=document.querySelector('#lookup-token');f.addEventListener('submit',async e=>{e.preventDefault();b.disabled=true;r.style.display='block';r.textContent='Submitting…';const data=Object.fromEntries(new FormData(f));try{const x=await fetch('/bookings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)}),j=await x.json();if(!x.ok)throw Error(j.error||'Request failed');r.textContent='Request recorded.\\nReference: '+j.booking_id+'\\nAccess token (save now): '+j.access_token;reference.value=j.booking_id;token.value=j.access_token;f.reset()}catch(err){r.textContent=err.message}finally{b.disabled=false}});async function customerGet(path,headers,optional=false){const response=await fetch(path,{headers}),data=await response.json();if(optional&&response.status===404)return null;if(!response.ok)throw Error(data.error||'Request failed');return data}lookup.addEventListener('submit',async e=>{e.preventDefault();lookupButton.disabled=true;lookupResult.style.display='block';lookupResult.textContent='Checking…';const id=reference.value.trim(),headers={'x-booking-token':token.value};try{const status=await customerGet('/bookings/'+encodeURIComponent(id),headers),[quote,payment]=await Promise.all([customerGet('/bookings/'+encodeURIComponent(id)+'/quote',headers,true),customerGet('/bookings/'+encodeURIComponent(id)+'/payment',headers,true)]),lines=['Booking status: '+status.status,quote?'Latest quote: NGN '+Number(quote.amount_ngn).toLocaleString()+' · '+quote.status:'Latest quote: not issued',payment?'Payment: '+payment.status:'Payment: not requested'];lookupResult.textContent=lines.join('\\n')}catch(err){lookupResult.textContent=err.message}finally{lookupButton.disabled=false}});</script></body></html>"""
+<section class="lookup"><div class="eyebrow">Customer access</div><h2>Check my booking</h2><p class="lead">Use the reference and private token shown when the request was created.</p><form id="lookup" class="lookup-grid"><label>Booking reference<input id="lookup-reference" required autocomplete="off"></label><label>Access token<input id="lookup-token" type="password" required autocomplete="off"></label><button id="lookup-submit" type="submit">Check status</button></form><div id="lookup-result" class="result" role="status"></div><div id="quote-actions" class="decision-actions"><button id="accept-quote" type="button">Accept latest quote</button><button id="decline-quote" class="decline" type="button">Decline latest quote</button></div></section></main>
+<script>const f=document.querySelector('#booking'),b=document.querySelector('#submit'),r=document.querySelector('#result'),lookup=document.querySelector('#lookup'),lookupButton=document.querySelector('#lookup-submit'),lookupResult=document.querySelector('#lookup-result'),reference=document.querySelector('#lookup-reference'),token=document.querySelector('#lookup-token'),quoteActions=document.querySelector('#quote-actions'),acceptQuote=document.querySelector('#accept-quote'),declineQuote=document.querySelector('#decline-quote');let currentCustomer=null;f.addEventListener('submit',async e=>{e.preventDefault();b.disabled=true;r.style.display='block';r.textContent='Submitting…';const data=Object.fromEntries(new FormData(f));try{const x=await fetch('/bookings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(data)}),j=await x.json();if(!x.ok)throw Error(j.error||'Request failed');r.textContent='Request recorded.\\nReference: '+j.booking_id+'\\nAccess token (save now): '+j.access_token;reference.value=j.booking_id;token.value=j.access_token;f.reset()}catch(err){r.textContent=err.message}finally{b.disabled=false}});async function customerRequest(path,headers,optional=false,options={}){const response=await fetch(path,{...options,headers:{...headers,...(options.headers||{})}}),data=await response.json();if(optional&&response.status===404)return null;if(!response.ok)throw Error(data.error||'Request failed');return data}lookup.addEventListener('submit',async e=>{e.preventDefault();lookupButton.disabled=true;quoteActions.classList.remove('visible');lookupResult.style.display='block';lookupResult.textContent='Checking…';const id=reference.value.trim(),headers={'x-booking-token':token.value};try{const status=await customerRequest('/bookings/'+encodeURIComponent(id),headers),[quote,payment]=await Promise.all([customerRequest('/bookings/'+encodeURIComponent(id)+'/quote',headers,true),customerRequest('/bookings/'+encodeURIComponent(id)+'/payment',headers,true)]),lines=['Booking status: '+status.status,quote?'Latest quote: NGN '+Number(quote.amount_ngn).toLocaleString()+' · '+quote.status:'Latest quote: not issued',payment?'Payment: '+payment.status:'Payment: not requested'];currentCustomer={id,headers};lookupResult.textContent=lines.join('\\n');quoteActions.classList.toggle('visible',Boolean(quote&&quote.status==='ISSUED'))}catch(err){currentCustomer=null;lookupResult.textContent=err.message}finally{lookupButton.disabled=false}});async function decide(decision){if(!currentCustomer)return;acceptQuote.disabled=declineQuote.disabled=true;try{await customerRequest('/bookings/'+encodeURIComponent(currentCustomer.id)+'/quote',currentCustomer.headers,false,{method:'PATCH',headers:{'content-type':'application/json'},body:JSON.stringify({decision})});lookup.requestSubmit()}catch(err){lookupResult.textContent=err.message}finally{acceptQuote.disabled=declineQuote.disabled=false}}acceptQuote.addEventListener('click',()=>decide('ACCEPTED'));declineQuote.addEventListener('click',()=>decide('DECLINED'));</script></body></html>"""
 
 
 def admin_page():
@@ -697,6 +747,8 @@ def route_request(event):
         return payment_webhook(event)
     if method == "GET" and len(parts) == 3 and parts[0] == "bookings" and parts[2] == "quote" and resource_id(1):
         return latest_quote(event, resource_id(1))
+    if method == "PATCH" and len(parts) == 3 and parts[0] == "bookings" and parts[2] == "quote" and resource_id(1):
+        return decide_quote(event, resource_id(1))
     if method == "GET" and len(parts) == 3 and parts[0] == "bookings" and parts[2] == "payment" and resource_id(1):
         return latest_payment(event, resource_id(1))
     if method == "GET" and len(parts) == 2 and parts[0] == "bookings" and resource_id(1):

@@ -37,6 +37,15 @@ class MemoryTable:
                 latest_quote_id=ExpressionAttributeValues[":quote_id"],
                 quote_version=ExpressionAttributeValues[":version"],
                 quote_amount_ngn=ExpressionAttributeValues[":amount"],
+                quote_status=ExpressionAttributeValues[":issued"],
+                accepted_quote_id=ExpressionAttributeValues[":empty"],
+            )
+        if ":decision" in ExpressionAttributeValues:
+            item.update(
+                status=ExpressionAttributeValues[":decision_status"],
+                quote_status=ExpressionAttributeValues[":decision"],
+                accepted_quote_id=ExpressionAttributeValues[":accepted_quote_id"],
+                quote_decided_at=ExpressionAttributeValues[":updated"],
             )
         if ":payment_id" in ExpressionAttributeValues:
             item["payment_id"] = ExpressionAttributeValues[":payment_id"]

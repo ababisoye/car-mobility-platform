@@ -35,7 +35,8 @@
     },
     "/bookings/{booking_id}/quote": {
       "parameters": [{"$ref": "#/components/parameters/BookingId"}],
-      "get": {"tags": ["Customer"], "summary": "Read the latest quote", "security": [{"bookingToken": []}], "responses": {"200": {"description": "Latest quote"}, "404": {"$ref": "#/components/responses/NotFound"}}}
+      "get": {"tags": ["Customer"], "summary": "Read the latest quote", "security": [{"bookingToken": []}], "responses": {"200": {"description": "Latest quote"}, "404": {"$ref": "#/components/responses/NotFound"}}},
+      "patch": {"tags": ["Customer"], "summary": "Accept or decline the latest quote", "security": [{"bookingToken": []}], "requestBody": {"required": true, "content": {"application/json": {"schema": {"$ref": "#/components/schemas/QuoteDecision"}}}}, "responses": {"200": {"description": "Decision recorded"}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/NotFound"}, "409": {"$ref": "#/components/responses/Conflict"}}}
     },
     "/bookings/{booking_id}/payment": {
       "parameters": [{"$ref": "#/components/parameters/BookingId"}],
@@ -125,7 +126,8 @@
           "pickup_at": {"type": "string"}, "end_at": {"type": "string"}, "vehicle_preference": {"type": "string", "maxLength": 100}, "notes": {"type": "string", "maxLength": 500}
         }
       },
-      "BookingCreated": {"type": "object", "required": ["booking_id", "access_token", "status", "message"], "properties": {"booking_id": {"type": "string", "format": "uuid"}, "access_token": {"type": "string", "writeOnly": true}, "status": {"const": "REQUESTED"}, "message": {"type": "string"}}}
+      "BookingCreated": {"type": "object", "required": ["booking_id", "access_token", "status", "message"], "properties": {"booking_id": {"type": "string", "format": "uuid"}, "access_token": {"type": "string", "writeOnly": true}, "status": {"const": "REQUESTED"}, "message": {"type": "string"}}},
+      "QuoteDecision": {"type": "object", "required": ["decision"], "additionalProperties": false, "properties": {"decision": {"enum": ["ACCEPTED", "DECLINED"]}}}
     }
   }
 }
