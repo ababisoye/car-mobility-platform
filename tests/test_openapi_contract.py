@@ -1,9 +1,21 @@
+import ast
 import json
 import unittest
 from pathlib import Path
 
 
 SPEC_PATH = Path(__file__).parents[1] / "infra" / "environments" / "demo" / "app" / "openapi.json"
+HANDLER_PATH = SPEC_PATH.with_name("handler.py")
+
+
+def runtime_constant(name):
+    tree = ast.parse(HANDLER_PATH.read_text(encoding="utf-8"))
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == name for target in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    raise AssertionError(f"Runtime constant not found: {name}")
 
 
 class OpenApiContractTests(unittest.TestCase):
@@ -46,6 +58,20 @@ class OpenApiContractTests(unittest.TestCase):
     def test_contract_contains_no_example_credentials(self):
         for forbidden in ("demo-admin", "demo-operator", "PAYMENT_WEBHOOK_SECRET", "AWS_RELEASE_ROLE_ARN"):
             self.assertNotIn(forbidden, self.raw)
+
+    def test_booking_location_enums_match_runtime_validation(self):
+        booking = self.spec["components"]["schemas"]["BookingRequest"]
+        properties = booking["properties"]
+
+        self.assertEqual(set(properties["hub"]["enum"]), runtime_constant("HUBS"))
+        self.assertEqual(
+            set(properties["trip_type"]["enum"]), runtime_constant("TRIP_TYPES")
+        )
+        self.assertEqual(
+            set(properties["destination_state"]["enum"]),
+            runtime_constant("NIGERIAN_STATES"),
+        )
+        self.assertIn("destination_state", booking["allOf"][0]["then"]["required"])
 
 
 if __name__ == "__main__":
